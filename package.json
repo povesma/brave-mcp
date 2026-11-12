@@ -21,6 +21,8 @@
     "verify:extension": "npm run verify -w @brave-mcp/extension",
     "build:mcp": "npm run build -w @brave-mcp/mcp",
     "verify:mcp": "npm run verify -w @brave-mcp/mcp",
+    "build:harness": "npm run build -w @brave-mcp/harness",
+    "verify:harness": "npm run verify -w @brave-mcp/harness",
     "launch:brave": "node scripts/launch-brave-mcp-dev.mjs"
   }
 }
