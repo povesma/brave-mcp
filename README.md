@@ -249,6 +249,7 @@ This is not meant to be an invisible headless browser farm. The browser is user-
 ├── apps
 │   ├── daemon      # localhost bridge and RPC service
 │   ├── extension   # Brave-compatible MV3 extension
+│   ├── harness     # agent-free player for YAML browser-and-command scripts
 │   └── mcp         # Codex-facing MCP server
 ├── docs
 │   ├── implementation-blueprint.md
@@ -267,6 +268,7 @@ Package-level notes:
 - [apps/extension/README.md](apps/extension/README.md)
 - [apps/daemon/README.md](apps/daemon/README.md)
 - [apps/mcp/README.md](apps/mcp/README.md)
+- [apps/harness/README.md](apps/harness/README.md)
 - [packages/protocol/README.md](packages/protocol/README.md)
 - [packages/sdk/README.md](packages/sdk/README.md)
 - [install/README.md](install/README.md)
@@ -298,6 +300,7 @@ npm run build:sdk
 npm run build:daemon
 npm run build:extension
 npm run build:mcp
+npm run build:harness
 ```
 
 ### Start The Daemon
@@ -370,6 +373,7 @@ npm run verify:protocol
 npm run verify:daemon
 npm run verify:mcp
 npm run verify:extension
+npm run verify:harness
 ```
 
 These checks cover:
@@ -378,6 +382,15 @@ These checks cover:
 - daemon RPC behavior with a simulated extension bridge
 - MCP tool wiring
 - extension build integrity
+- the script harness (loader, daemon client, command runner, engine, pause and resume) against a scripted stand-in daemon
+
+## Script Harness
+
+`apps/harness` plays a YAML script of browser steps and local commands
+through the daemon, with no AI agent involved — for example a login that
+types credentials and a one-time code fetched from command-line tools. See
+[apps/harness/README.md](apps/harness/README.md) for the script format, exit
+codes, pause and resume, and the dedicated-profile setup.
 
 In addition to that, the project has been exercised with real Brave smoke tests during implementation.
 

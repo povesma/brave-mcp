@@ -1,0 +1,77 @@
+# AWS login script template.
+#
+# 1. Copy this file to apps/harness/local/aws-login.yaml (that folder is
+#    git-ignored; your real script stays out of the repository).
+# 2. Replace every REPLACE_... placeholder. Find the selectors by inspecting
+#    the sign-in pages in the automation profile.
+# 3. From apps/harness run:  node dist/index.js local/aws-login.yaml
+#
+# The commands must print the value on standard output and nothing else.
+# Their output is never printed by the harness. A value passed as a command
+# argument is visible in the system process list while that command runs, so
+# do not pass a captured value to a command.
+name: aws-login
+pause_timeout_s: 600
+
+# A command that exits 0 while the AWS credentials are still valid. When it
+# does, the harness exits with code 10 and plays no step.
+precondition:
+  cmd: [REPLACE_CREDENTIAL_CHECK_COMMAND, REPLACE_ARGUMENT]
+  timeout_s: 30
+
+steps:
+  # --- Part 1: sign in to the AWS console in the automation profile ---------
+  - open_tab: { url: "https://REPLACE_SIGN_IN_ADDRESS" }
+  - wait_for:
+      selector: "REPLACE_USERNAME_FIELD_SELECTOR"
+      timeout_s: 30
+      on_failure: { then: pause }
+  - run: { cmd: [REPLACE_USERNAME_COMMAND, REPLACE_ARGUMENT], capture: user }
+  - run: { cmd: [REPLACE_PASSWORD_COMMAND, REPLACE_ARGUMENT], capture: pass }
+  - type: { selector: "REPLACE_USERNAME_FIELD_SELECTOR", text: "${user}" }
+  - type: { selector: "REPLACE_PASSWORD_FIELD_SELECTOR", text: "${pass}" }
+  - click: { selector: "REPLACE_SIGN_IN_BUTTON_SELECTOR" }
+  - wait_for:
+      selector: "REPLACE_ONE_TIME_CODE_FIELD_SELECTOR"
+      timeout_s: 30
+      on_failure:
+        retry: { times: 1, wait_s: 3 }
+        then: pause
+  # The one-time code is fetched only now, so it is fresh when typed. After a
+  # pause on the next step, the harness runs this command again.
+  - run: { cmd: [REPLACE_ONE_TIME_CODE_COMMAND, REPLACE_ARGUMENT], capture: otp }
+  - type:
+      selector: "REPLACE_ONE_TIME_CODE_FIELD_SELECTOR"
+      text: "${otp}"
+      on_failure: { then: pause }
+  - click: { selector: "REPLACE_SUBMIT_CODE_BUTTON_SELECTOR" }
+  - wait_for:
+      selector: "REPLACE_SIGNED_IN_MARKER_SELECTOR"
+      timeout_s: 60
+      on_failure: { then: pause }
+  - close_tab: {}
+
+  # --- Part 2: `aws login`, finished in the same browser profile ------------
+  # BROWSER: "true" asks the CLI not to open the system browser itself, so no
+  # tab appears in the everyday profile. Whether the CLI honours it is checked
+  # on the first real run.
+  - start:
+      id: aws
+      cmd: [aws, login, REPLACE_AWS_LOGIN_ARGUMENT]
+      env: { BROWSER: "true" }
+      capture_match:
+        var: url
+        pattern: "https://REPLACE_AUTHORIZE_HOST/\\S+"
+      timeout_s: 30
+  # The prefix must match the authorize page only, not a tab left open earlier.
+  - use_tab:
+      url_prefix: "https://REPLACE_AUTHORIZE_HOST/"
+      wait_s: 3
+      open: "${url}"
+  - wait_for:
+      selector: "REPLACE_CONFIRM_BUTTON_SELECTOR"
+      timeout_s: 30
+      on_failure: { then: pause }
+  - click: { selector: "REPLACE_CONFIRM_BUTTON_SELECTOR" }
+  - await: { id: aws, timeout_s: 120 }
+  - close_tab: {}
