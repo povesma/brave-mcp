@@ -56,11 +56,14 @@
 ## State At Hand-Off
 - Stories 1 to 6 are done. Story 7 is coded and tested except the operator
   check 7.5 (which also closes 7.2). In stories 8 and 9 every sub-task that
-  needs no operator is done (8.1 to 8.3, 9.1 to 9.3). `npm run
+  needs no operator is done (8.1 to 8.3, 9.1 to 9.3), and 9.4 is done: the
+  extension runs in the operator's existing dedicated profile. `npm run
   verify:harness` passes 99 tests with no browser.
-- Open, all needing the operator: 7.5 (pause and Enter in a terminal), 8.4
-  and 8.5 (fixture run against real Brave, needs agreement on which
-  profile), 9.4 (automation profile), 9.5 and 9.6 (real AWS run).
+- Story 7 is done: the operator's terminal run paused on a wrong selector
+  and completed after the fix and Enter.
+- Story 8 is done: the fixture run passed in real Brave, and neither the
+  daemon log nor the extension storage holds the stand-in secrets.
+- Open: 9.5 and 9.6 (real AWS run, by the operator).
 - The harness package, the root file changes and the three AUTO-1 documents
   are committed locally on the feature branch by operator choice; the branch
   is not pushed.
@@ -285,7 +288,7 @@ Follow TDD where feasible:
   - [X] 6.2 Implement `selectors` and `retry` in the engine to pass the
     tests [verify: auto-test]
     → 5 passed, 0 failed [live] (2026-11-11)
-- [ ] 7.0 **User Story:** As an operator, I want a stuck step to pause the
+- [X] 7.0 **User Story:** As an operator, I want a stuck step to pause the
   running process and resume after I fix the script, with fresh one-time
   values and nothing written to disk, so that I do not restart the whole
   login [5/0]
@@ -298,12 +301,13 @@ Follow TDD where feasible:
     [verify: auto-test]
     → 1 test written; it starts the compiled command and sends the signal
       [live] (2026-11-11)
-  - [~] 7.2 Implement pause, script reload and resume on `SIGUSR2` or on a
+  - [X] 7.2 Implement pause, script reload and resume on `SIGUSR2` or on a
     line from standard input when a terminal is attached
     [verify: auto-test]
     → pause, reload and `SIGUSR2` resume: 1 passed, 0 failed
       [live] (2026-11-11); resume by pressing Enter needs a terminal and is
       not covered by a test — it is checked by 7.5
+    → resume by Enter confirmed by the operator run in 7.5 [live] (2026-11-13)
   - [X] 7.3 Write tests for the resume rules: a reloaded script whose
     already-played steps differ is refused and the pause continues; an
     invalid reloaded script is refused and the pause continues; every
@@ -321,10 +325,13 @@ Follow TDD where feasible:
       background command ends the run with exit 1; a `run` step that fails
       when run again refuses the resume and the pause continues
       [live] (2026-11-11)
-  - [ ] 7.5 Operator check in a terminal: run the fixture script with a
+  - [X] 7.5 Operator check in a terminal: run the fixture script with a
     wrong selector, see the pause report, correct the selector, press Enter,
     and see the run complete [verify: manual-run-user]
-- [ ] 8.0 **User Story:** As a developer, I want a login-shaped fixture site,
+    → operator run: paused at step 8 with NOT_FOUND after both rounds; after
+      the fix and Enter it resumed at step 8 and completed all 19 steps;
+      `completed` is printed only on the exit-0 path [live] (2026-11-13)
+- [X] 8.0 **User Story:** As a developer, I want a login-shaped fixture site,
   stand-in commands and a fixture script played against real Brave so that
   the harness is proven in a real browser without AWS [5/0]
   - [X] 8.1 Add `apps/harness/fixtures/site-server.mjs`: a local site with a
@@ -346,12 +353,19 @@ Follow TDD where feasible:
     → the loader accepts it (test "the shipped script ... is valid"); the
       sign-in tab is closed before `use_tab` so the prefix matches one tab
       only [live] (2026-11-11)
-  - [ ] 8.4 With the operator's agreement, start the fixture site and play
+  - [X] 8.4 With the operator's agreement, start the fixture site and play
     `login.yaml` against the paired Brave; the run reaches the success
     marker and exits 0 [verify: manual-run-claude]
-  - [ ] 8.5 After that run, search the daemon's log output and the
+    → 19 of 19 steps ok in the operator's dedicated profile, exit 0
+      [live] (2026-11-13)
+  - [X] 8.5 After that run, search the daemon's log output and the
     extension's stored status for the stand-in password and code; neither
     is present [verify: manual-run-claude]
+    → extension storage of every profile holds neither value; a control
+      search finds the stored daemon address there [live] (2026-11-13)
+    → a replay through the daemon with logging on: 25 requests logged, no
+      line holds the stand-in user, password or code; the everyday daemon
+      runs `--silent`, so it logs nothing [live] (2026-11-13)
 - [ ] 9.0 **User Story:** As an operator, I want a dedicated-profile setup
   guide, an AWS login script template and a git-ignored place for my real
   script so that I can run the AWS login unattended in an isolated profile
@@ -372,10 +386,13 @@ Follow TDD where feasible:
     `apps/harness/local/` to `.gitignore` [verify: code-only]
     → the credential-check command is a placeholder; the loader accepts the
       template [live] (2026-11-11)
-  - [ ] 9.4 Operator: set up the automation profile by the guide; the
+  - [X] 9.4 Operator: set up the automation profile by the guide; the
     daemon readiness check shows the extension connected and paired, and a
     tab list shows only the automation profile's tabs
     [verify: manual-run-user]
+    → operator's existing dedicated profile used; readiness shows connected
+      and paired, and the one window seen matches that profile by operator
+      check [live] (2026-11-13)
   - [ ] 9.5 Operator: copy the template to `apps/harness/local/`, fill it
     in, and run it. Record: exit code; whether a tab opened in the everyday
     profile; whether the sign-in URL was captured within the time limit;

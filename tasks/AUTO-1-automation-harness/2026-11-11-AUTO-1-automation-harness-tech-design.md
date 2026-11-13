@@ -1,6 +1,8 @@
 # AUTO-1: Browser Automation Harness - Technical Design
 
-**Status**: Draft (revised after independent critique)
+**Status**: Implemented, covered by automated tests and run against real
+Brave with the fixture site; not yet run against real AWS (see the task list
+for the open operator checks)
 **PRD**: [2026-11-11-AUTO-1-automation-harness-prd.md](2026-11-11-AUTO-1-automation-harness-prd.md)
 **Created**: 2026-11-11
 
@@ -287,7 +289,12 @@ the MCP server uses. Unlike the MCP server, the harness never starts a daemon.
   and paired, exit code 3; otherwise the call is a step failure.
 - **`wait_for`.** The engine repeats short waits until its own deadline. A
   round that ends with "not found", an internal error or a daemon timeout is
-  followed by the next round. Only the deadline makes the step fail.
+  followed by the next round. Only the deadline makes the step fail, with one
+  exception: a "tab not found" or "permission denied" reply fails the step at
+  once, because waiting cannot change it.
+- **Results are checked.** The client parses each result with the protocol's
+  output schema. A result that lacks an expected field (for example a tab id
+  that is not a number) is an internal error, and so a step failure.
 - **Pause.** The engine prints the step number, step type, the error code,
   and the address of the target tab without its query part, plus the title.
   It does not print page content. It then waits for a line on standard input
@@ -300,7 +307,8 @@ the MCP server uses. Unlike the MCP server, the harness never starts a daemon.
   engine runs again every earlier `run` step whose captured variable the
   stuck step uses, so a one-time code is fresh. A value captured by `start`
   cannot be refreshed; if that background command has exited, the resume
-  fails and says so.
+  fails, says so, and the run ends with exit code 1. If a `run` step fails
+  when it is run again, the resume is refused and the pause continues.
 - **Pause time limit.** When it passes, the run ends with exit code 1.
   Background commands keep running during a pause and may reach their own
   time limits; the pause output names the background commands still running.
