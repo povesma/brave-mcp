@@ -228,7 +228,8 @@ everyday browsing by giving it its own profile:
 
 1. **Create the profile.** In Brave open the profile menu (top right) and
    choose to add a new profile. Name it, for example, `Automation`. A new
-   window of that profile opens.
+   window of that profile opens. An existing profile kept for this work can
+   be used instead; skip this step then.
 2. **Load the extension there only.** In the automation window open
    `brave://extensions`, turn on `Developer mode`, choose `Load unpacked` and
    select `apps/extension/dist`.
