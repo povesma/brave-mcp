@@ -77,6 +77,7 @@ export class Engine {
   private targetTab: number | undefined;
   private readonly variables = new Map<string, string>();
   private readonly background = new Map<string, BackgroundCommand>();
+  private readonly played = new Set<number>();
 
   constructor(options: EngineOptions) {
     this.script = options.script;
@@ -94,15 +95,15 @@ export class Engine {
     try {
       let index = 0;
       while (index < this.script.steps.length) {
-        const failure = await this.playStep(index);
-        if (!failure) {
-          index += 1;
+        const result = await this.playStep(index);
+        if (!("failure" in result)) {
+          index = result.next;
           continue;
         }
-        if (this.script.steps[index]?.on_failure?.then !== "pause") {
-          return { status: "step_failed", step: index + 1, code: failure.code };
+        if (onFailureOf(this.script.steps[index])?.then !== "pause") {
+          return { status: "step_failed", step: index + 1, code: result.failure.code };
         }
-        const stopped = await this.pause(index, failure);
+        const stopped = await this.pause(index, result.failure);
         if (stopped) {
           return stopped;
         }
@@ -127,11 +128,44 @@ export class Engine {
     return `step ${index + 1}/${this.script.steps.length} ${this.script.steps[index]?.kind ?? "?"}`;
   }
 
-  private async playStep(index: number): Promise<StepFailure | undefined> {
+  private async playStep(index: number): Promise<{ next: number } | { failure: StepFailure }> {
     const step = this.script.steps[index]!;
     const label = this.label(index);
     const startedAt = Date.now();
     this.say(`${label}: started`);
+    this.played.add(index);
+
+    if (step.kind === "jump") {
+      const target = this.labelIndex().get(step.to);
+      if (target === undefined) {
+        this.say(`${label}: failed (NO_LABEL; ${elapsedSeconds(startedAt)} s)`);
+        return { failure: new StepFailure("NO_LABEL") };
+      }
+      this.say(`${label}: ok, jumping to "${step.to}"`);
+      return { next: target };
+    }
+
+    if (step.kind === "skip_if_found") {
+      try {
+        const found = await this.probe(step);
+        if (found) {
+          const target = this.labelIndex().get(step.to);
+          if (target === undefined) {
+            throw new StepFailure("NO_LABEL");
+          }
+          this.say(`${label}: ok, found (${elapsedSeconds(startedAt)} s), jumping to "${step.to}"`);
+          return { next: target };
+        }
+        this.say(`${label}: ok, not found (${elapsedSeconds(startedAt)} s)`);
+        return { next: index + 1 };
+      } catch (error) {
+        if (!(error instanceof StepFailure)) {
+          throw error;
+        }
+        this.say(`${label}: failed (${error.message}; ${elapsedSeconds(startedAt)} s)`);
+        return { failure: error };
+      }
+    }
 
     const rounds = 1 + (step.on_failure?.retry?.times ?? 0);
     const waitMs = (step.on_failure?.retry?.wait_s ?? 0) * 1000;
@@ -145,7 +179,7 @@ export class Engine {
         try {
           await this.attempt(step, selector);
           this.say(`${label}: ok (${elapsedSeconds(startedAt)} s)`);
-          return undefined;
+          return { next: index + 1 };
         } catch (error) {
           if (!(error instanceof StepFailure)) {
             throw error;
@@ -161,7 +195,33 @@ export class Engine {
     }
 
     this.say(`${label}: failed (${last.message}; ${elapsedSeconds(startedAt)} s)`);
-    return last;
+    return { failure: last };
+  }
+
+  private labelIndexCache: Map<string, number> | undefined;
+
+  private labelIndex(): Map<string, number> {
+    if (!this.labelIndexCache) {
+      const map = new Map<string, number>();
+      this.script.steps.forEach((step, index) => {
+        if (step.label !== undefined) {
+          map.set(step.label, index);
+        }
+      });
+      this.labelIndexCache = map;
+    }
+    return this.labelIndexCache;
+  }
+
+  // skip_if_found's single probe: unlike wait_for, one dom.waitForSelector call, no retry loop.
+  private async probe(step: StepOf<"skip_if_found">): Promise<boolean> {
+    const result = await this.daemon("dom.waitForSelector", {
+      tabId: this.target(),
+      selector: step.selector,
+      state: "visible",
+      timeoutMs: Math.ceil(step.timeout_s * 1000),
+    });
+    return result.found;
   }
 
   private async attempt(rawStep: Step, selector?: string): Promise<void> {
@@ -188,6 +248,17 @@ export class Engine {
         });
         if (result.status !== "ok") {
           throw new StepFailure("NAVIGATION_TIMEOUT");
+        }
+        return;
+      }
+      case "reload": {
+        const result = await this.daemon("tabs.reload", {
+          tabId: this.target(),
+          waitUntil: step.wait_until,
+          timeoutMs: Math.ceil(step.timeout_s * 1000),
+        });
+        if (result.status !== "ok") {
+          throw new StepFailure("RELOAD_TIMEOUT");
         }
         return;
       }
@@ -293,12 +364,22 @@ export class Engine {
   }
 
   private async useTab(step: StepOf<"use_tab">): Promise<number> {
+    const tabId = await this.findTab(step);
+    if (step.activate) {
+      await this.daemon("tabs.switch", { tabId });
+    }
+    return tabId;
+  }
+
+  private async findTab(step: StepOf<"use_tab">): Promise<number> {
+    const regex = step.url_regex === undefined ? undefined : new RegExp(step.url_regex);
+    const matchesUrl = (url: string): boolean => (regex ? regex.test(url) : url.startsWith(step.url_prefix ?? ""));
     const deadline = Date.now() + step.wait_s * 1000;
     for (;;) {
       const { tabs } = await this.daemon("tabs.list", {});
-      const matches = tabs.filter((tab) => tab.url.startsWith(step.url_prefix));
-      if (matches.length > 1) {
-        throw new StepFailure("MANY_TABS", `${matches.length} tabs match the URL prefix`);
+      const matches = tabs.filter((tab) => matchesUrl(tab.url));
+      if (matches.length > 1 && step.pick === "only") {
+        throw new StepFailure("MANY_TABS", `${matches.length} tabs match the URL`);
       }
       const [match] = matches;
       if (match) {
@@ -306,6 +387,9 @@ export class Engine {
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
+        if (step.open === undefined) {
+          throw new StepFailure("NO_TAB", "no tab matches the URL");
+        }
         return this.openTab(step.open);
       }
       await sleep(Math.min(this.pollMs, remaining));
@@ -419,11 +503,15 @@ export class Engine {
         continue;
       }
       this.script = reloaded.script;
+      this.labelIndexCache = undefined;
 
       const used = new Set(variablesUsed(stuck));
-      const earlier = this.script.steps.slice(0, index);
+      const earlier = this.script.steps
+        .slice(0, index)
+        .map((step, position) => ({ step, position }))
+        .filter(({ position }) => this.played.has(position));
 
-      const stale = earlier.find(
+      const stale = earlier.map(({ step }) => step).find(
         (step) =>
           step.kind === "start" &&
           step.capture_match !== undefined &&
@@ -444,8 +532,8 @@ export class Engine {
     }
   }
 
-  private async refreshCaptures(earlier: Step[], used: Set<string>): Promise<boolean> {
-    for (const [position, step] of earlier.entries()) {
+  private async refreshCaptures(earlier: { step: Step; position: number }[], used: Set<string>): Promise<boolean> {
+    for (const { step, position } of earlier) {
       if (step.kind !== "run" || step.capture === undefined || !used.has(step.capture)) {
         continue;
       }
@@ -486,6 +574,10 @@ export class Engine {
       `to resume: correct the script file, then send SIGUSR2 to process ${process.pid}, or press Enter when a terminal is attached (time limit ${this.script.pause_timeout_s} s)`,
     );
   }
+}
+
+function onFailureOf(step: Step | undefined): { then: "stop" | "pause" } | undefined {
+  return step && "on_failure" in step ? step.on_failure : undefined;
 }
 
 function elapsedSeconds(startedAt: number): string {

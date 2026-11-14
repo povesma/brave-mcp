@@ -38,11 +38,12 @@ async function withPausedRun(
   name: string,
   yaml: string,
   body: (context: { run: HarnessRun; daemon: FakeDaemon; rewrite: (yaml: string) => Promise<void> }) => Promise<void>,
-  options: { env?: Record<string, string>; cwd?: string } = {},
+  options: { env?: Record<string, string>; cwd?: string; prepare?: (daemon: FakeDaemon) => void } = {},
 ): Promise<void> {
   const daemon = await FakeDaemon.start();
   const scriptPath = await writeScript(name, yaml);
   prepareDaemon(daemon);
+  options.prepare?.(daemon);
   const run = startHarness([scriptPath], { ...daemonEnv(daemon), ...options.env }, options.cwd);
   try {
     await body({ run, daemon, rewrite: async (text) => void (await writeScript(name, text)) });
@@ -175,6 +176,107 @@ steps:
     assert.equal(result.code, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /resume failed: step 5 uses a value captured from background command "cli", which has exited/);
   });
+});
+
+const probesFind = { prepare: (daemon: FakeDaemon) => daemon.fallback("dom.waitForSelector", { result: { found: true } }) };
+
+test("after a resume, a later jump lands on its label in the reloaded script", async () => {
+  const script = (stuck: string, inserted: string): string => `
+name: pause-jump-table
+pause_timeout_s: 20
+steps:
+  - open_tab: { url: "https://example.test/login" }
+  - skip_if_found: { selector: "#in", to: a }
+  - type: { selector: "#right", text: "skipped" }
+  - type: { selector: "#right", text: "a", label: a }
+  - click: { selector: "${stuck}", on_failure: { then: pause } }
+${inserted}  - skip_if_found: { selector: "#in", to: b }
+  - type: { selector: "#right", text: "never" }
+  - type: { selector: "#right", text: "b", label: b }
+`;
+  await withPausedRun(
+    "pause-jump-table",
+    script("#wrong", ""),
+    async ({ run, daemon, rewrite }) => {
+      await paused(run);
+      await rewrite(script("#right", `  - type: { selector: "#right", text: "inserted" }\n`));
+      run.child.kill("SIGUSR2");
+      const result = await run.finished;
+
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.deepEqual(
+        daemon.callsTo("dom.type").map((call) => call.params.text),
+        ["a", "inserted", "b"],
+      );
+    },
+    probesFind,
+  );
+});
+
+test("a resume does not run again a run step that a jump skipped", async () => {
+  const codes = await startTestServer((hit) => ({ body: `code-${hit}` }));
+  const skipped = await startTestServer((hit) => ({ body: `skipped-${hit}` }));
+  const script = (selector: string): string => `
+name: pause-skipped-run
+pause_timeout_s: 20
+steps:
+  - open_tab: { url: "https://example.test/login" }
+  - run: { cmd: ${cmd("fetch-url", codes.url)}, capture: code }
+  - skip_if_found: { selector: "#in", to: a }
+  - run: { cmd: ${cmd("fetch-url", skipped.url)}, capture: code }
+  - type: { selector: "${selector}", text: "\${code}", label: a, on_failure: { then: pause } }
+`;
+  try {
+    await withPausedRun(
+      "pause-skipped-run",
+      script("#wrong"),
+      async ({ run, daemon, rewrite }) => {
+        await paused(run);
+        await rewrite(script("#right"));
+        run.child.kill("SIGUSR2");
+        const result = await run.finished;
+
+        assert.equal(result.code, 0, result.stdout + result.stderr);
+        assert.equal(skipped.hits.length, 0, "the skipped run step must never run");
+        assert.equal(codes.hits.length, 2);
+        assert.deepEqual(
+          daemon.callsTo("dom.type").map((call) => call.params.text),
+          ["code-1", "code-2"],
+        );
+      },
+      probesFind,
+    );
+  } finally {
+    await codes.stop();
+    await skipped.stop();
+  }
+});
+
+test("a resume does not treat a value as stale because of a start step that a jump skipped", async () => {
+  const script = (selector: string): string => `
+name: pause-skipped-start
+pause_timeout_s: 20
+steps:
+  - open_tab: { url: "https://example.test/login" }
+  - run: { cmd: ${cmd("print-value", "v1")}, capture: val }
+  - skip_if_found: { selector: "#in", to: a }
+  - start: { id: cli, cmd: ${cmd("sleep", "60")}, capture_match: { var: val, pattern: "never" } }
+  - type: { selector: "${selector}", text: "\${val}", label: a, on_failure: { then: pause } }
+`;
+  await withPausedRun(
+    "pause-skipped-start",
+    script("#wrong"),
+    async ({ run, rewrite }) => {
+      await paused(run);
+      await rewrite(script("#right"));
+      run.child.kill("SIGUSR2");
+      const result = await run.finished;
+
+      assert.equal(result.code, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /resumed at step 5/);
+    },
+    probesFind,
+  );
 });
 
 test("the pause time limit ends the run with exit code 1", async () => {

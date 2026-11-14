@@ -195,6 +195,95 @@ test("use_tab fails when two tabs match the prefix", async () => {
   assert.deepEqual(methodsOf(daemon), ["tabs.list"]);
 });
 
+const CONSOLE_REGEX = `"^https://[a-z0-9-]+\\\\.console\\\\.example\\\\.test/secrets"`;
+
+test("use_tab with url_regex adopts the tab whose URL matches", async () => {
+  const { outcome, daemon } = await play(
+    withoutOpenTab(`use_tab: { url_regex: ${CONSOLE_REGEX}, wait_s: 0.3 }`, CLICK),
+    (fake) => {
+      fake.reply("tabs.list", tabsReply("https://other.example.test/", "https://eu-1.console.example.test/secrets?r=1"));
+      fake.reply("dom.click", { result: { clicked: true } });
+    },
+  );
+
+  assert.deepEqual(outcome, { status: "completed" });
+  assert.equal(daemon.callsTo("dom.click")[0]?.params.tabId, 71);
+});
+
+test("use_tab with pick first takes the first of several matching tabs", async () => {
+  const { outcome, daemon } = await play(
+    withoutOpenTab(`use_tab: { url_regex: ${CONSOLE_REGEX}, pick: first, wait_s: 0.3 }`, CLICK),
+    (fake) => {
+      fake.reply(
+        "tabs.list",
+        tabsReply("https://other.example.test/", "https://eu-1.console.example.test/secrets", "https://us-2.console.example.test/secrets"),
+      );
+      fake.reply("dom.click", { result: { clicked: true } });
+    },
+  );
+
+  assert.deepEqual(outcome, { status: "completed" });
+  assert.equal(daemon.callsTo("dom.click")[0]?.params.tabId, 71);
+});
+
+test("use_tab with url_regex and the default pick fails when two tabs match", async () => {
+  const { outcome } = await play(withoutOpenTab(`use_tab: { url_regex: ${CONSOLE_REGEX}, wait_s: 0.3 }`, CLICK), (fake) => {
+    fake.reply("tabs.list", tabsReply("https://eu-1.console.example.test/secrets", "https://us-2.console.example.test/secrets"));
+  });
+
+  assert.deepEqual(outcome, { status: "step_failed", step: 1, code: "MANY_TABS" });
+});
+
+test("use_tab with activate brings the adopted tab to the front", async () => {
+  const { outcome, daemon } = await play(
+    withoutOpenTab(`use_tab: { url_regex: ${CONSOLE_REGEX}, activate: true, wait_s: 0.3 }`, CLICK),
+    (fake) => {
+      fake.reply("tabs.list", tabsReply("https://eu-1.console.example.test/secrets"));
+      fake.reply("tabs.switch", {
+        result: { tab: { tabId: 70, windowId: 1, title: "t", url: "https://eu-1.console.example.test/secrets", active: true } },
+      });
+      fake.reply("dom.click", { result: { clicked: true } });
+    },
+  );
+
+  assert.deepEqual(outcome, { status: "completed" });
+  assert.deepEqual(methodsOf(daemon), ["tabs.list", "tabs.switch", "dom.click"]);
+  assert.equal(daemon.callsTo("tabs.switch")[0]?.params.tabId, 70);
+});
+
+test("use_tab without open fails when no tab matches within wait_s", async () => {
+  const { outcome, daemon } = await play(withoutOpenTab(`use_tab: { url_regex: ${CONSOLE_REGEX}, wait_s: 0.2 }`, CLICK), (fake) => {
+    fake.fallback("tabs.list", tabsReply("https://other.example.test/"));
+  });
+
+  assert.deepEqual(outcome, { status: "step_failed", step: 1, code: "NO_TAB" });
+  assert.equal(daemon.callsTo("tabs.open").length, 0);
+});
+
+test("reload sends its wait mode and time limit for the target tab", async () => {
+  const { outcome, daemon } = await play(
+    scriptWith(`reload: {}`, `reload: { wait_until: load, timeout_s: 5 }`),
+    (fake) => {
+      fake.reply("tabs.open", TAB);
+      fake.reply("tabs.reload", { result: { status: "ok" } }, { result: { status: "ok" } });
+    },
+  );
+
+  assert.deepEqual(outcome, { status: "completed" });
+  const [first, second] = daemon.callsTo("tabs.reload");
+  assert.deepEqual(first?.params, { tabId: 41, waitUntil: "domcontentloaded", timeoutMs: 30_000, bypassCache: false });
+  assert.deepEqual(second?.params, { tabId: 41, waitUntil: "load", timeoutMs: 5_000, bypassCache: false });
+});
+
+test("reload fails when its status is a timeout", async () => {
+  const { outcome } = await play(scriptWith(`reload: {}`), (fake) => {
+    fake.reply("tabs.open", TAB);
+    fake.reply("tabs.reload", { result: { status: "timeout" } });
+  });
+
+  assert.deepEqual(outcome, { status: "step_failed", step: 2, code: "RELOAD_TIMEOUT" });
+});
+
 test("a URL captured by start is used by later steps, and await succeeds after the callback", async () => {
   const { outcome, lines, daemon } = await play(
     withoutOpenTab(

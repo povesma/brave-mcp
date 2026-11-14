@@ -89,15 +89,16 @@ A complete example is [fixtures/login.yaml](fixtures/login.yaml).
 
 ### Step types
 
-There are eleven step types. Any other name is rejected, and so is any field
-that is not listed here. Steps that run page code, read cookies or export
-session data do not exist.
+There are fourteen step types. Any other name is rejected, and so is any
+field that is not listed here. Steps that run page code, read cookies or
+export session data do not exist.
 
 | Step | What it does | Required fields | Optional fields (default) | Fails when |
 |---|---|---|---|---|
 | `open_tab` | Opens a URL in a new tab; that tab becomes the target | `url` | — | daemon error, or no valid tab id |
-| `use_tab` | Makes the tab whose address starts with `url_prefix` the target; if none appears within `wait_s`, opens `open` in a new tab | `url_prefix`, `open` | `wait_s` (3) | daemon error, or more than one tab matches |
+| `use_tab` | Makes the tab whose address starts with `url_prefix`, or matches the regular expression `url_regex`, the target; `pick: first` takes the first match in the browser's tab order; `activate: true` brings it to the front; if none appears within `wait_s`, opens `open` in a new tab | exactly one of `url_prefix`, `url_regex` | `pick`: `only` or `first` (`only`), `activate` (false), `open`, `wait_s` (3) | daemon error; more than one tab matches and `pick` is `only`; no tab matches and there is no `open` |
 | `navigate` | Loads a URL in the target tab | `url` | `timeout_s` (30) | daemon error, or the load timed out |
+| `reload` | Reloads the target tab | — | `wait_until`: `domcontentloaded` or `load` (`domcontentloaded`), `timeout_s` (30) | daemon error, or the reload timed out |
 | `wait_for` | Waits until an element is visible (or only present) | `selector` | `state`: `visible` or `attached` (`visible`), `timeout_s` (30) | not found when `timeout_s` has passed |
 | `type` | Clears the field, then types text | `selector`, `text` | — | daemon error, or nothing was typed |
 | `click` | Clicks an element | `selector` | — | daemon error, or nothing was clicked |
@@ -106,6 +107,11 @@ session data do not exist.
 | `run` | Runs a command to its end; `capture` stores its standard output in a variable | `cmd` | `capture`, `env`, `timeout_s` (60) | non-zero exit, time limit, command not found, or an empty capture |
 | `start` | Starts a command in the background; `capture_match` stores the first output text matching a pattern | `id`, `cmd` | `env`, `capture_match` (`var`, `pattern`), `timeout_s` (30) | no match within `timeout_s`, more than one distinct match, or the command exits first |
 | `await` | Waits for a background command to exit | `id` | `timeout_s` (120) | non-zero exit or time limit |
+| `skip_if_found` | Probes once for a visible element; if present, jumps execution forward to the step carrying the matching `label`, skipping every step in between (their variable captures and target-tab changes never happen); if absent, continues to the very next step | `selector`, `to` | `timeout_s` (3) | a daemon error other than "not found", including the timeout and internal-error codes that `wait_for` retries |
+| `jump` | Continues at the step carrying the matching `label`, skipping every step in between; ends one branch so the next branch's steps do not run | `to` | — | never |
+
+Any step may also carry a `label` (a name unique within the script), making
+it a jump target for `skip_if_found` and `jump`.
 
 Rules the loader enforces:
 
@@ -118,9 +124,24 @@ Rules the loader enforces:
 - **`start` ids** are unique; `await` names an earlier `start`.
 - **`wait_for`** is carried out as repeated short waits, so a page load in the
   middle does not end it early. Only its own `timeout_s` makes it fail.
-- **`use_tab`**: choose a `url_prefix` that matches the wanted page only. A
-  tab left open by an earlier step that also matches would be adopted, or
-  would make two matches.
+- **`use_tab`**: choose a `url_prefix` or `url_regex` that matches the wanted
+  page only. A tab left open by an earlier step that also matches would be
+  adopted, or would make two matches. Without `open`, the step only adopts
+  an existing tab, for a script that starts from a tab you keep open.
+- **`reload`** waits for `domcontentloaded` by default: some pages, such as
+  the AWS console, keep loading long after they can be used.
+- **`skip_if_found`** does one short probe for a visible element, not
+  `wait_for`'s repeated waits, and does not retry a daemon timeout or
+  internal error; it also takes no `on_failure`, so such an error stops the
+  script. Wait for the page with `wait_for` before probing it. It needs a
+  target tab, like any other browser step.
+- **`skip_if_found` and `jump`**: `to` must name a `label` that appears later
+  in the script (forward jumps only); a duplicate `label` is rejected.
+- **Every path.** With jumps, a step can be reached along several paths. The
+  loader checks each step against what every path into it has in common: a
+  variable it uses must be captured, an `await` id started, and a target tab
+  set on all of them. A step that no path reaches (after a `jump`, with no
+  jump to its label) is rejected.
 
 ### Variables
 
@@ -178,8 +199,9 @@ On resume the harness reloads the script file, then:
 - **Refuses, and stays paused**, when the file is invalid, or when the steps
   before the stuck one differ from those already played. The reason is
   printed. Only the stuck step and later steps may be changed.
-- **Runs again** every earlier `run` step whose captured variable the stuck
-  step uses, so a one-time code is fresh. If such a command fails, the resume
+- **Runs again** every earlier `run` step that played (not one a jump
+  skipped) whose captured variable the stuck step uses, so a one-time code
+  is fresh. If such a command fails, the resume
   is refused and the pause continues.
 - **Ends the run with exit code 1** when the stuck step uses a value captured
   by a `start` step whose command has since exited: that value cannot be
@@ -201,6 +223,7 @@ waits for the browser).
 | `fixtures/site-server.mjs` | Sign-in site on `http://127.0.0.1:39310/`. Prints one line per request; stops by itself after `--time-limit-s` (300) |
 | `fixtures/commands/fake-cli-login.mjs` | Prints a sign-in URL on standard error, serves a confirm page on port 39311, exits 0 after the confirm button is clicked |
 | `fixtures/login.yaml` | The flow |
+| `fixtures/reload-tab.yaml` | Opens two fixture tabs, adopts the first by `url_regex` with `pick: first` and `activate: true`, reloads it, then closes both |
 | `fixtures/commands/*.mjs` | Small stand-in commands used by the script and the tests; each file starts with a comment that says what it does |
 | `fixtures/daemon-config/` | A sample daemon config file used by a test |
 

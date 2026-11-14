@@ -50,21 +50,39 @@ const patternSchema = z.string().min(1).superRefine((pattern, ctx) => {
   }
 });
 
+const labelSchema = z.string().min(1);
+
 const stepSchemas = {
-  open_tab: z.object({ url: z.string().min(1), on_failure: onFailureSchema.optional() }).strict(),
+  open_tab: z.object({ url: z.string().min(1), on_failure: onFailureSchema.optional(), label: labelSchema.optional() }).strict(),
   use_tab: z
     .object({
-      url_prefix: z.string().min(1),
+      url_prefix: z.string().min(1).optional(),
+      url_regex: patternSchema.optional(),
+      pick: z.enum(["only", "first"]).default("only"),
+      activate: z.boolean().default(false),
       wait_s: z.number().nonnegative().default(3),
-      open: z.string().min(1),
+      open: z.string().min(1).optional(),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
-    .strict(),
+    .strict()
+    .refine((fields) => (fields.url_prefix === undefined) !== (fields.url_regex === undefined), {
+      message: 'needs exactly one of "url_prefix" and "url_regex"',
+    }),
   navigate: z
     .object({
       url: z.string().min(1),
       timeout_s: secondsSchema.default(30),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
+    })
+    .strict(),
+  reload: z
+    .object({
+      wait_until: z.enum(["domcontentloaded", "load"]).default("domcontentloaded"),
+      timeout_s: secondsSchema.default(30),
+      on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
   wait_for: z
@@ -73,6 +91,7 @@ const stepSchemas = {
       state: z.enum(["attached", "visible"]).default("visible"),
       timeout_s: secondsSchema.default(30),
       on_failure: selectorOnFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
   type: z
@@ -80,17 +99,21 @@ const stepSchemas = {
       selector: selectorSchema,
       text: z.string(),
       on_failure: selectorOnFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
-  click: z.object({ selector: selectorSchema, on_failure: selectorOnFailureSchema.optional() }).strict(),
+  click: z
+    .object({ selector: selectorSchema, on_failure: selectorOnFailureSchema.optional(), label: labelSchema.optional() })
+    .strict(),
   press_key: z
     .object({
       key: z.string().min(1),
       modifiers: z.array(z.enum(["Alt", "Control", "Meta", "Shift"])).default([]),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
-  close_tab: z.object({ on_failure: onFailureSchema.optional() }).strict(),
+  close_tab: z.object({ on_failure: onFailureSchema.optional(), label: labelSchema.optional() }).strict(),
   run: z
     .object({
       cmd: commandSchema,
@@ -98,6 +121,7 @@ const stepSchemas = {
       env: envSchema.optional(),
       timeout_s: secondsSchema.default(60),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
   start: z
@@ -108,6 +132,7 @@ const stepSchemas = {
       capture_match: z.object({ var: variableNameSchema, pattern: patternSchema }).strict().optional(),
       timeout_s: secondsSchema.default(30),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
   await: z
@@ -115,8 +140,18 @@ const stepSchemas = {
       id: z.string().min(1),
       timeout_s: secondsSchema.default(120),
       on_failure: onFailureSchema.optional(),
+      label: labelSchema.optional(),
     })
     .strict(),
+  skip_if_found: z
+    .object({
+      selector: selectorSchema,
+      to: labelSchema,
+      timeout_s: secondsSchema.default(3),
+      label: labelSchema.optional(),
+    })
+    .strict(),
+  jump: z.object({ to: labelSchema, label: labelSchema.optional() }).strict(),
 } as const;
 
 const preconditionSchema = z
@@ -210,6 +245,9 @@ export function parseScript(text: string): LoadResult {
   }
 
   if (problems.length === 0) {
+    problems.push(...labelProblems(steps));
+  }
+  if (problems.length === 0) {
     problems.push(...orderProblems(steps));
   }
   if (problems.length > 0) {
@@ -250,7 +288,9 @@ export function substituteStep<S extends Step>(step: S, lookup: (name: string) =
       copy.url = replace(copy.url);
       break;
     case "use_tab":
-      copy.open = replace(copy.open);
+      if (copy.open !== undefined) {
+        copy.open = replace(copy.open);
+      }
       break;
     case "type":
       copy.text = replace(copy.text);
@@ -276,7 +316,7 @@ function substitutableStrings(step: Step): string[] {
     case "navigate":
       return [step.url];
     case "use_tab":
-      return [step.open];
+      return step.open === undefined ? [] : [step.open];
     case "type":
       return [step.text];
     case "run":
@@ -354,76 +394,165 @@ function describeIssue(issue: z.ZodIssue): string {
   return field ? `field "${field}": ${issue.message}` : issue.message;
 }
 
-function orderProblems(steps: Step[]): ScriptProblem[] {
+function labelProblems(steps: Step[]): ScriptProblem[] {
   const problems: ScriptProblem[] = [];
-  const firstCaptureStep = new Map<string, number>();
+  const labelIndex = new Map<string, number>();
+
   steps.forEach((step, index) => {
-    const name = capturedVariable(step);
-    if (name !== undefined && !firstCaptureStep.has(name)) {
-      firstCaptureStep.set(name, index + 1);
+    if (step.label === undefined) {
+      return;
+    }
+    if (labelIndex.has(step.label)) {
+      problems.push({ step: index + 1, reason: `label "${step.label}" is already used by an earlier step` });
+      return;
+    }
+    labelIndex.set(step.label, index);
+  });
+
+  steps.forEach((step, index) => {
+    if (step.kind !== "skip_if_found" && step.kind !== "jump") {
+      return;
+    }
+    const number = index + 1;
+    const targetIndex = labelIndex.get(step.to);
+    if (targetIndex === undefined) {
+      problems.push({ step: number, reason: `${step.kind}.to names an unknown label "${step.to}"` });
+      return;
+    }
+    if (targetIndex <= index) {
+      problems.push({
+        step: number,
+        reason: `${step.kind}.to names label "${step.to}", which is not later in the script (forward jumps only)`,
+      });
     }
   });
 
-  const captured = new Set<string>();
-  const started = new Set<string>();
-  let hasTargetTab = false;
+  return problems;
+}
+
+const BROWSER_STEP_KINDS = new Set<StepKind>([
+  "navigate",
+  "reload",
+  "wait_for",
+  "type",
+  "click",
+  "press_key",
+  "close_tab",
+  "skip_if_found",
+]);
+
+// What is certainly true when a step starts, on every path that reaches it.
+interface PathState {
+  captured: Set<string>;
+  started: Set<string>;
+  hasTargetTab: boolean;
+}
+
+function afterStep(state: PathState, step: Step): PathState {
+  const next: PathState = { captured: new Set(state.captured), started: new Set(state.started), hasTargetTab: state.hasTargetTab };
+  const name = capturedVariable(step);
+  if (name !== undefined) {
+    next.captured.add(name);
+  }
+  if (step.kind === "start") {
+    next.started.add(step.id);
+  }
+  if (step.kind === "open_tab" || step.kind === "use_tab") {
+    next.hasTargetTab = true;
+  }
+  if (step.kind === "close_tab") {
+    next.hasTargetTab = false;
+  }
+  return next;
+}
+
+function common(states: PathState[]): PathState | undefined {
+  const [first, ...rest] = states;
+  if (first === undefined) {
+    return undefined;
+  }
+  return {
+    captured: new Set([...first.captured].filter((name) => rest.every((state) => state.captured.has(name)))),
+    started: new Set([...first.started].filter((id) => rest.every((state) => state.started.has(id)))),
+    hasTargetTab: states.every((state) => state.hasTargetTab),
+  };
+}
+
+// Jumps only go forward (labelProblems runs first), so one pass in step order sees every path
+// into a step before the step itself.
+function orderProblems(steps: Step[]): ScriptProblem[] {
+  const problems: ScriptProblem[] = [];
+  const labelIndex = new Map<string, number>();
+  steps.forEach((step, index) => {
+    if (step.label !== undefined) {
+      labelIndex.set(step.label, index);
+    }
+  });
+
+  const incoming: PathState[][] = steps.map(() => []);
+  incoming[0]?.push({ captured: new Set(), started: new Set(), hasTargetTab: false });
+  const capturedBefore = new Set<string>();
+  const startedBefore = new Set<string>();
 
   steps.forEach((step, index) => {
     const number = index + 1;
+    const state = common(incoming[index] ?? []);
 
-    for (const name of variablesUsed(step)) {
-      if (captured.has(name)) {
-        continue;
+    if (state === undefined) {
+      problems.push({ step: number, reason: `${step.kind} can never run: no path reaches it after a jump` });
+    } else {
+      for (const name of variablesUsed(step)) {
+        if (state.captured.has(name)) {
+          continue;
+        }
+        const later = steps.findIndex((other, at) => at > index && capturedVariable(other) === name) + 1;
+        problems.push({
+          step: number,
+          reason: capturedBefore.has(name)
+            ? `variable "${name}" is not captured on every path to this step: a jump can skip the step that captures it`
+            : later > 0
+              ? `variable "${name}" is used before step ${later} captures it`
+              : `variable "${name}" is never captured`,
+        });
       }
-      const captureStep = firstCaptureStep.get(name);
-      problems.push({
-        step: number,
-        reason:
-          captureStep === undefined
-            ? `variable "${name}" is never captured`
-            : `variable "${name}" is used before step ${captureStep} captures it`,
-      });
-    }
 
-    switch (step.kind) {
-      case "open_tab":
-      case "use_tab":
-        hasTargetTab = true;
-        break;
-      case "navigate":
-      case "wait_for":
-      case "type":
-      case "click":
-      case "press_key":
-      case "close_tab":
-        if (!hasTargetTab) {
-          problems.push({
-            step: number,
-            reason: `${step.kind} needs a target tab: no open_tab or use_tab step sets one before it`,
-          });
+      if (BROWSER_STEP_KINDS.has(step.kind) && !state.hasTargetTab) {
+        problems.push({
+          step: number,
+          reason: `${step.kind} needs a target tab on every path to it: no open_tab or use_tab step sets one before it on some path`,
+        });
+      }
+
+      if (step.kind === "start" && startedBefore.has(step.id)) {
+        problems.push({ step: number, reason: `start id "${step.id}" is already used by an earlier step` });
+      }
+      if (step.kind === "await" && !state.started.has(step.id)) {
+        problems.push({
+          step: number,
+          reason: startedBefore.has(step.id)
+            ? `await of "${step.id}": its start step is not played on every path to this step`
+            : `await of unknown id "${step.id}": no earlier start step has it`,
+        });
+      }
+
+      const after = afterStep(state, step);
+      if (step.kind === "skip_if_found" || step.kind === "jump") {
+        const target = labelIndex.get(step.to);
+        if (target !== undefined) {
+          incoming[target]?.push(after);
         }
-        if (step.kind === "close_tab") {
-          hasTargetTab = false;
-        }
-        break;
-      case "start":
-        if (started.has(step.id)) {
-          problems.push({ step: number, reason: `start id "${step.id}" is already used by an earlier step` });
-        }
-        started.add(step.id);
-        break;
-      case "await":
-        if (!started.has(step.id)) {
-          problems.push({ step: number, reason: `await of unknown id "${step.id}": no earlier start step has it` });
-        }
-        break;
-      default:
-        break;
+      }
+      if (step.kind !== "jump") {
+        incoming[index + 1]?.push(after);
+      }
     }
 
     const name = capturedVariable(step);
     if (name !== undefined) {
-      captured.add(name);
+      capturedBefore.add(name);
+    }
+    if (step.kind === "start") {
+      startedBefore.add(step.id);
     }
   });
 
