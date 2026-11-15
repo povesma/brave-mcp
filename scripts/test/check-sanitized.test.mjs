@@ -28,11 +28,10 @@ async function repo(files, { patterns } = {}) {
   return dir;
 }
 
-// Local-only files live in .private/, which ignores itself and is never committed.
+// Local-only files live in the git directory, which git never commits or pushes.
 async function local(dir, name, text) {
-  await mkdir(join(dir, ".private"), { recursive: true });
-  await writeFile(join(dir, ".private", ".gitignore"), "*\n");
-  await writeFile(join(dir, ".private", name), text);
+  await mkdir(join(dir, ".git", "privacy"), { recursive: true });
+  await writeFile(join(dir, ".git", "privacy", name), text);
 }
 
 async function stage(dir, files) {
@@ -88,12 +87,33 @@ test("a staged file under a blocked path fails and names the file", async () => 
   });
 });
 
-test("a staged file under .private/ fails as a blocked path", async () => {
-  await withRepo({ ".private/policy": "visibility: private\n" }, {}, async (dir) => {
+test("a linked worktree uses the local files of its main repository", async () => {
+  await withRepo({ "src/a.ts": "export const a = 1;\n" }, { patterns: `${LOCAL_SECRET}\n` }, async (dir) => {
+    git(dir, ["commit", "-q", "-m", "first"]);
+    const worktree = `${dir}-worktree`;
+    git(dir, ["worktree", "add", "-q", worktree]);
+    try {
+      await stage(worktree, { "src/b.ts": `// ${LOCAL_SECRET}\n` });
+
+      const { code, output } = check(worktree);
+
+      assert.equal(code, 1, output);
+      assert.match(output, /src\/b\.ts: local patterns line 1/);
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  });
+});
+
+test("files in a .private/ folder of the working tree are not read", async () => {
+  await withRepo({ "src/a.ts": `// ${LOCAL_SECRET}\n` }, {}, async (dir) => {
+    await mkdir(join(dir, ".private"), { recursive: true });
+    await writeFile(join(dir, ".private", "patterns"), `${LOCAL_SECRET}\n`);
+
     const { code, output } = check(dir);
 
-    assert.equal(code, 1, output);
-    assert.match(output, /\.private\/policy: blocked path/);
+    assert.equal(code, 0, output);
+    assert.match(output, /0 local pattern\(s\)/);
   });
 });
 
@@ -115,7 +135,7 @@ test("a literal from the local pattern file fails, naming its line number but ne
       const { code, output } = check(dir);
 
       assert.equal(code, 1, output);
-      assert.match(output, /docs\/notes\.md: \.private\/patterns line 3/);
+      assert.match(output, /docs\/notes\.md: local patterns line 3/);
       assert.ok(!output.toLowerCase().includes(LOCAL_SECRET));
     },
   );
@@ -126,7 +146,7 @@ test("an author email listed in the local pattern file fails the commit", async 
     const { code, output } = check(dir, [], { GIT_AUTHOR_EMAIL: "wrong@corp.test" });
 
     assert.equal(code, 1, output);
-    assert.match(output, /author email matches \.private\/patterns line 1/);
+    assert.match(output, /author email matches local patterns line 1/);
     assert.ok(!output.includes("wrong@corp.test"));
   });
 });
@@ -207,7 +227,7 @@ test("--pre-push fails when the repository has no local policy", async () => {
     const { code, output } = prePush(dir, remote, outgoing(dir));
 
     assert.equal(code, 1, output);
-    assert.match(output, /no \.private\/policy/);
+    assert.match(output, /no local policy/);
   });
 });
 
@@ -260,7 +280,7 @@ test("--pre-push reports an outgoing author email that the local policy does not
     const { code, output } = prePush(dir, remote, outgoing(dir));
 
     assert.equal(code, 1, output);
-    assert.match(output, /author email does not match author_email of \.private\/policy/);
+    assert.match(output, /author email does not match author_email of the local policy/);
     assert.ok(!output.includes("ok@example.test"));
   });
 });
@@ -298,6 +318,6 @@ test("--history checks every commit's author email", async () => {
     const { code, output } = check(dir, ["--history"]);
 
     assert.equal(code, 1, output);
-    assert.match(output, new RegExp(`${hash}: author email matches \\.private/patterns line 1`));
+    assert.match(output, new RegExp(`${hash}: author email matches local patterns line 1`));
   });
 });

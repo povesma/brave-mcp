@@ -2,18 +2,17 @@
 // Checks staged changes (default), every commit (--history), or the commits a push would send
 // (--pre-push <remote-url>, ref lines on stdin as git's pre-push hook gives them) for content
 // that must not be published. Prints the file, commit and pattern name only, never the matched text.
-// The policy and the private terms are read from the untracked .private/ folder, so no committed file lists them.
+// The policy and the private terms are read from privacy/ in the shared git directory, which is never committed.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const GIT_TIME_LIMIT_MS = 60_000;
-const PATTERN_FILE = ".private/patterns";
-const POLICY_FILE = ".private/policy";
+const PATTERN_FILE = "local patterns";
+const POLICY_FILE = "local policy";
 const ZERO_SHA = /^0+$/;
 
 const BLOCKED_PATHS = [
-  /(^|\/)\.private\//,
   /(^|\/)\.env($|\.)/,
   /(^|\/)tmp\//,
   /(^|\/)local\//,
@@ -50,10 +49,10 @@ function git(args) {
   return result.stdout;
 }
 
-function localPatterns(root) {
+function localPatterns(privacyDir) {
   let text;
   try {
-    text = readFileSync(join(root, PATTERN_FILE), "utf8");
+    text = readFileSync(join(privacyDir, "patterns"), "utf8");
   } catch {
     return [];
   }
@@ -64,10 +63,10 @@ function localPatterns(root) {
 }
 
 // Reads the local policy file: "key: value" lines and "  - item" lists; any other line is ignored.
-function readPolicy(root) {
+function readPolicy(privacyDir) {
   let text;
   try {
-    text = readFileSync(join(root, POLICY_FILE), "utf8");
+    text = readFileSync(join(privacyDir, "policy"), "utf8");
   } catch {
     return undefined;
   }
@@ -118,7 +117,7 @@ function emailProblem(email, patterns, policy) {
     return `author email matches ${PATTERN_FILE} line ${match.line}`;
   }
   if (policy?.author_email && !globMatches(policy.author_email, email)) {
-    return `author email does not match author_email of ${POLICY_FILE}`;
+    return `author email does not match author_email of the ${POLICY_FILE}`;
   }
   return undefined;
 }
@@ -176,12 +175,11 @@ function diffProblems(diff, patterns, policy, problems) {
 const LOG_FORMAT = ["-p", "-U0", "--no-color", "--no-ext-diff", "--format=__COMMIT__ %h %ae"];
 const prePushAt = process.argv.indexOf("--pre-push");
 const mode = prePushAt >= 0 ? "pre-push" : process.argv.includes("--history") ? "history" : "staged";
-const root = git(["rev-parse", "--show-toplevel"]).trim();
-const patterns = localPatterns(root);
-const policy = readPolicy(root);
-say(
-  `mode: ${mode}; ${patterns.length} local pattern(s) from ${PATTERN_FILE}; ${POLICY_FILE} ${policy ? "found" : "not found"}`,
-);
+// The common directory is shared by every worktree; git may print it relative to the current directory.
+const privacyDir = join(resolve(git(["rev-parse", "--git-common-dir"]).trim()), "privacy");
+const patterns = localPatterns(privacyDir);
+const policy = readPolicy(privacyDir);
+say(`mode: ${mode}; ${patterns.length} local pattern(s); ${POLICY_FILE} ${policy ? "found" : "not found"}`);
 
 const problems = [];
 if (mode === "history") {
@@ -193,9 +191,9 @@ if (mode === "history") {
 } else if (mode === "pre-push") {
   const remoteUrl = process.argv[prePushAt + 1] ?? "";
   if (!policy) {
-    problems.push(`no ${POLICY_FILE}: this repository has no local privacy policy, so nothing may be pushed`);
+    problems.push(`no ${POLICY_FILE}: this repository has none, so nothing may be pushed`);
   } else if (!policy.allowed_remotes.includes(remoteUrl)) {
-    problems.push(`the remote is not in allowed_remotes of ${POLICY_FILE}`);
+    problems.push(`the remote is not in allowed_remotes of the ${POLICY_FILE}`);
   }
   say("reading the refs being pushed");
   const refs = readFileSync(0, "utf8")
