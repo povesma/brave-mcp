@@ -1,14 +1,19 @@
 #!/usr/bin/env node
-// Checks staged changes (default) or every commit (--history) for content that must not be
-// published. Prints the file, commit and pattern name only, never the matched text.
+// Checks staged changes (default), every commit (--history), or the commits a push would send
+// (--pre-push <remote-url>, ref lines on stdin as git's pre-push hook gives them) for content
+// that must not be published. Prints the file, commit and pattern name only, never the matched text.
+// The policy and the private terms are read from the untracked .private/ folder, so no committed file lists them.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const GIT_TIME_LIMIT_MS = 60_000;
-const PATTERN_FILE = ".sanitize-patterns";
+const PATTERN_FILE = ".private/patterns";
+const POLICY_FILE = ".private/policy";
+const ZERO_SHA = /^0+$/;
 
 const BLOCKED_PATHS = [
+  /(^|\/)\.private\//,
   /(^|\/)\.env($|\.)/,
   /(^|\/)tmp\//,
   /(^|\/)local\//,
@@ -58,6 +63,43 @@ function localPatterns(root) {
     .filter(({ literal }) => literal !== "" && !literal.startsWith("#"));
 }
 
+// Reads the local policy file: "key: value" lines and "  - item" lists; any other line is ignored.
+function readPolicy(root) {
+  let text;
+  try {
+    text = readFileSync(join(root, POLICY_FILE), "utf8");
+  } catch {
+    return undefined;
+  }
+  const policy = { allowed_remotes: [], never_publish: [], author_email: undefined, upstream_base: undefined };
+  let list;
+  for (const line of text.split("\n")) {
+    const item = /^\s+-\s+(.+)$/.exec(line);
+    if (item && list) {
+      list.push(item[1].trim());
+      continue;
+    }
+    const field = /^([a-z_]+):\s*(.*)$/.exec(line);
+    if (!field) {
+      continue;
+    }
+    list = Array.isArray(policy[field[1]]) ? policy[field[1]] : undefined;
+    if (!list && field[2]) {
+      policy[field[1]] = field[2].trim();
+    }
+  }
+  return policy;
+}
+
+function globMatches(glob, value) {
+  const source = glob.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${source}$`, "i").test(value);
+}
+
+function neverPublished(policy, file) {
+  return (policy?.never_publish ?? []).some((path) => (path.endsWith("/") ? file.startsWith(path) : file === path));
+}
+
 function contentProblems(text, patterns) {
   const found = SECRET_FORMATS.filter(([, regex]) => regex.test(text)).map(([name]) => name);
   const lower = text.toLowerCase();
@@ -69,14 +111,20 @@ function contentProblems(text, patterns) {
   return found;
 }
 
-function emailProblem(email, patterns) {
+function emailProblem(email, patterns, policy) {
   const lower = email.toLowerCase();
   const match = patterns.find(({ literal }) => lower.includes(literal));
-  return match ? `author email matches ${PATTERN_FILE} line ${match.line}` : undefined;
+  if (match) {
+    return `author email matches ${PATTERN_FILE} line ${match.line}`;
+  }
+  if (policy?.author_email && !globMatches(policy.author_email, email)) {
+    return `author email does not match author_email of ${POLICY_FILE}`;
+  }
+  return undefined;
 }
 
 // Reads a unified diff (or `git log -p` output) and reports per commit and file.
-function diffProblems(diff, patterns, problems) {
+function diffProblems(diff, patterns, policy, problems) {
   let commit = "";
   let file = "";
   const seen = new Set();
@@ -93,7 +141,7 @@ function diffProblems(diff, patterns, problems) {
     const header = /^__COMMIT__ (\S+) (.*)$/.exec(line);
     if (header) {
       commit = header[1];
-      const problem = emailProblem(header[2], patterns);
+      const problem = emailProblem(header[2], patterns, policy);
       if (problem) {
         report(commit, problem);
       }
@@ -107,6 +155,9 @@ function diffProblems(diff, patterns, problems) {
     if (line.startsWith("+++ ")) {
       if (line !== "+++ /dev/null" && BLOCKED_PATHS.some((regex) => regex.test(file))) {
         report(`${prefix()}${file}`, "blocked path");
+      }
+      if (line !== "+++ /dev/null" && neverPublished(policy, file)) {
+        report(`${prefix()}${file}`, "never_publish path");
       }
       continue;
     }
@@ -122,29 +173,54 @@ function diffProblems(diff, patterns, problems) {
   }
 }
 
-const history = process.argv.includes("--history");
+const LOG_FORMAT = ["-p", "-U0", "--no-color", "--no-ext-diff", "--format=__COMMIT__ %h %ae"];
+const prePushAt = process.argv.indexOf("--pre-push");
+const mode = prePushAt >= 0 ? "pre-push" : process.argv.includes("--history") ? "history" : "staged";
 const root = git(["rev-parse", "--show-toplevel"]).trim();
 const patterns = localPatterns(root);
-say(`mode: ${history ? "every commit" : "staged changes"}; ${patterns.length} local pattern(s) from ${PATTERN_FILE}`);
+const policy = readPolicy(root);
+say(
+  `mode: ${mode}; ${patterns.length} local pattern(s) from ${PATTERN_FILE}; ${POLICY_FILE} ${policy ? "found" : "not found"}`,
+);
 
 const problems = [];
-if (history) {
-  say("reading every commit");
-  const log = git(["log", "--all", "-p", "-U0", "--no-color", "--no-ext-diff", "--format=__COMMIT__ %h %ae"]);
+if (mode === "history") {
+  const upstream = policy?.upstream_base ? ["--not", policy.upstream_base] : [];
+  say(policy?.upstream_base ? `reading every commit not inherited from upstream_base` : "reading every commit");
+  const log = git(["log", "--all", ...LOG_FORMAT, ...upstream]);
   say("checking paths, added lines and author emails");
-  diffProblems(log, patterns, problems);
+  diffProblems(log, patterns, policy, problems);
+} else if (mode === "pre-push") {
+  const remoteUrl = process.argv[prePushAt + 1] ?? "";
+  if (!policy) {
+    problems.push(`no ${POLICY_FILE}: this repository has no local privacy policy, so nothing may be pushed`);
+  } else if (!policy.allowed_remotes.includes(remoteUrl)) {
+    problems.push(`the remote is not in allowed_remotes of ${POLICY_FILE}`);
+  }
+  say("reading the refs being pushed");
+  const refs = readFileSync(0, "utf8")
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((fields) => fields.length === 4 && !ZERO_SHA.test(fields[1]));
+  for (const [, localSha, , remoteSha] of refs) {
+    const range = ZERO_SHA.test(remoteSha) ? [localSha, "--not", "--remotes"] : [`${remoteSha}..${localSha}`];
+    say(`reading the commits not yet on the remote (${localSha.slice(0, 7)})`);
+    const log = git(["log", ...LOG_FORMAT, ...range]);
+    say("checking paths, added lines and author emails");
+    diffProblems(log, patterns, policy, problems);
+  }
 } else {
   say("reading the author email");
   const ident = git(["var", "GIT_AUTHOR_IDENT"]);
   const email = /<([^>]*)>/.exec(ident)?.[1] ?? "";
-  const problem = emailProblem(email, patterns);
+  const problem = emailProblem(email, patterns, policy);
   if (problem) {
     problems.push(problem);
   }
   say("reading staged changes");
   const diff = git(["diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--diff-filter=ACMR"]);
   say("checking paths and added lines");
-  diffProblems(diff, patterns, problems);
+  diffProblems(diff, patterns, policy, problems);
 }
 
 if (problems.length === 0) {

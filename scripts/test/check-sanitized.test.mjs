@@ -22,11 +22,17 @@ async function repo(files, { patterns } = {}) {
   await mkdir(dir, { recursive: true });
   git(dir, ["init", "-q"]);
   if (patterns !== undefined) {
-    await writeFile(join(dir, ".sanitize-patterns"), patterns);
-    await writeFile(join(dir, ".gitignore"), ".sanitize-patterns\n");
+    await local(dir, "patterns", patterns);
   }
   await stage(dir, files);
   return dir;
+}
+
+// Local-only files live in .private/, which ignores itself and is never committed.
+async function local(dir, name, text) {
+  await mkdir(join(dir, ".private"), { recursive: true });
+  await writeFile(join(dir, ".private", ".gitignore"), "*\n");
+  await writeFile(join(dir, ".private", name), text);
 }
 
 async function stage(dir, files) {
@@ -82,6 +88,15 @@ test("a staged file under a blocked path fails and names the file", async () => 
   });
 });
 
+test("a staged file under .private/ fails as a blocked path", async () => {
+  await withRepo({ ".private/policy": "visibility: private\n" }, {}, async (dir) => {
+    const { code, output } = check(dir);
+
+    assert.equal(code, 1, output);
+    assert.match(output, /\.private\/policy: blocked path/);
+  });
+});
+
 test("a secret format in an added line fails, naming the pattern but never printing the value", async () => {
   await withRepo({ "src/config.ts": `const key = "${FAKE_AWS_KEY}";\n` }, {}, async (dir) => {
     const { code, output } = check(dir);
@@ -92,7 +107,7 @@ test("a secret format in an added line fails, naming the pattern but never print
   });
 });
 
-test("a literal from .sanitize-patterns fails, naming its line number but never printing it", async () => {
+test("a literal from the local pattern file fails, naming its line number but never printing it", async () => {
   await withRepo(
     { "docs/notes.md": `run with --profile ${LOCAL_SECRET.toUpperCase()}\n` },
     { patterns: `# local identifiers\n\n${LOCAL_SECRET}\n` },
@@ -100,18 +115,18 @@ test("a literal from .sanitize-patterns fails, naming its line number but never 
       const { code, output } = check(dir);
 
       assert.equal(code, 1, output);
-      assert.match(output, /docs\/notes\.md: \.sanitize-patterns line 3/);
+      assert.match(output, /docs\/notes\.md: \.private\/patterns line 3/);
       assert.ok(!output.toLowerCase().includes(LOCAL_SECRET));
     },
   );
 });
 
-test("an author email listed in .sanitize-patterns fails the commit", async () => {
+test("an author email listed in the local pattern file fails the commit", async () => {
   await withRepo({ "src/a.ts": "export const a = 1;\n" }, { patterns: "wrong@corp.test\n" }, async (dir) => {
     const { code, output } = check(dir, [], { GIT_AUTHOR_EMAIL: "wrong@corp.test" });
 
     assert.equal(code, 1, output);
-    assert.match(output, /author email matches \.sanitize-patterns line 1/);
+    assert.match(output, /author email matches \.private\/patterns line 1/);
     assert.ok(!output.includes("wrong@corp.test"));
   });
 });
@@ -119,7 +134,7 @@ test("an author email listed in .sanitize-patterns fails the commit", async () =
 test("a line that is only removed does not count", async () => {
   await withRepo({ "src/a.ts": `// ${LOCAL_SECRET}\n` }, {}, async (dir) => {
     git(dir, ["commit", "-q", "-m", "first"]);
-    await writeFile(join(dir, ".sanitize-patterns"), `${LOCAL_SECRET}\n`);
+    await local(dir, "patterns", `${LOCAL_SECRET}\n`);
     await stage(dir, { "src/a.ts": "// clean\n" });
 
     const { code, output } = check(dir);
@@ -143,6 +158,138 @@ test("--history finds a match in an earlier commit and names the commit", async 
   });
 });
 
+function policy({ remotes = [], never = [], email = "*@example.test" } = {}) {
+  return [
+    "# local privacy policy",
+    "visibility: private",
+    "allowed_remotes:",
+    ...remotes.map((remote) => `  - ${remote}`),
+    "never_publish:",
+    ...never.map((path) => `  - ${path}`),
+    `author_email: ${email}`,
+    "",
+  ].join("\n");
+}
+
+function prePush(dir, url, lines) {
+  const result = spawnSync(process.execPath, [SCRIPT, "--pre-push", url], {
+    cwd: dir,
+    env: { ...process.env, ...AUTHOR },
+    input: lines,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  return { code: result.status, output: result.stdout + result.stderr };
+}
+
+async function withRemote(files, body) {
+  await withRepo(files, {}, async (dir) => {
+    const remote = join(dir, "..", `${dir.split("/").pop()}-remote.git`);
+    await rm(remote, { recursive: true, force: true });
+    spawnSync("git", ["init", "-q", "--bare", remote]);
+    try {
+      await body(dir, remote);
+    } finally {
+      await rm(remote, { recursive: true, force: true });
+    }
+  });
+}
+
+function outgoing(dir) {
+  const sha = git(dir, ["rev-parse", "HEAD"]).trim();
+  return `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`;
+}
+
+test("--pre-push fails when the repository has no local policy", async () => {
+  await withRemote({ "src/a.ts": "export const a = 1;\n" }, async (dir, remote) => {
+    git(dir, ["commit", "-q", "-m", "first"]);
+
+    const { code, output } = prePush(dir, remote, outgoing(dir));
+
+    assert.equal(code, 1, output);
+    assert.match(output, /no \.private\/policy/);
+  });
+});
+
+test("--pre-push fails for a remote not listed in allowed_remotes", async () => {
+  await withRemote({ "src/a.ts": "export const a = 1;\n" }, async (dir, remote) => {
+    await local(dir, "policy", policy({ remotes: ["git@example.test:me/other.git"] }));
+    git(dir, ["commit", "-q", "-m", "first"]);
+
+    const { code, output } = prePush(dir, remote, outgoing(dir));
+
+    assert.equal(code, 1, output);
+    assert.match(output, /remote is not in allowed_remotes/);
+  });
+});
+
+test("--pre-push fails when an outgoing commit adds a never_publish path", async () => {
+  await withRemote({ "notes/plan.md": "plan\n" }, async (dir, remote) => {
+    await local(dir, "policy", policy({ remotes: [remote], never: ["notes/"] }));
+    git(dir, ["commit", "-q", "-m", "first"]);
+
+    const { code, output } = prePush(dir, remote, outgoing(dir));
+
+    assert.equal(code, 1, output);
+    assert.match(output, /notes\/plan\.md: never_publish path/);
+  });
+});
+
+test("--pre-push checks only commits the remote does not have yet", async () => {
+  await withRemote({ "src/a.ts": `// ${LOCAL_SECRET}\n` }, async (dir, remote) => {
+    await local(dir, "policy", policy({ remotes: [remote] }));
+    git(dir, ["commit", "-q", "-m", "first"]);
+    git(dir, ["push", "-q", remote, "HEAD:refs/heads/main"]);
+    git(dir, ["fetch", "-q", remote, "+refs/heads/*:refs/remotes/origin/*"]);
+    await local(dir, "patterns", `${LOCAL_SECRET}\n`);
+    await stage(dir, { "src/b.ts": "export const b = 2;\n" });
+    git(dir, ["commit", "-q", "-m", "second"]);
+
+    const { code, output } = prePush(dir, remote, outgoing(dir));
+
+    assert.equal(code, 0, output);
+    assert.match(output, /no problems found/);
+  });
+});
+
+test("--pre-push reports an outgoing author email that the local policy does not allow", async () => {
+  await withRemote({ "src/a.ts": "export const a = 1;\n" }, async (dir, remote) => {
+    await local(dir, "policy", policy({ remotes: [remote], email: "*@users.noreply.github.com" }));
+    git(dir, ["commit", "-q", "-m", "first"]);
+
+    const { code, output } = prePush(dir, remote, outgoing(dir));
+
+    assert.equal(code, 1, output);
+    assert.match(output, /author email does not match author_email of \.private\/policy/);
+    assert.ok(!output.includes("ok@example.test"));
+  });
+});
+
+test("staged changes under a never_publish path from the local policy fail", async () => {
+  await withRepo({ "notes/plan.md": "x\n" }, {}, async (dir) => {
+    await local(dir, "policy", policy({ never: ["notes/"] }));
+    const { code, output } = check(dir);
+
+    assert.equal(code, 1, output);
+    assert.match(output, /notes\/plan\.md: never_publish path/);
+  });
+});
+
+test("--history skips commits reachable from upstream_base in the local policy", async () => {
+  await withRepo({ "src/a.ts": "export const a = 1;\n" }, {}, async (dir) => {
+    git(dir, ["commit", "-q", "-m", "upstream"], { GIT_AUTHOR_EMAIL: "someone@else.test" });
+    const base = git(dir, ["rev-parse", "HEAD"]).trim();
+    await local(dir, "policy", policy({ email: "*@example.test" }).replace("visibility: private", `visibility: private\nupstream_base: ${base}`));
+    await stage(dir, { "src/b.ts": "export const b = 2;\n" });
+    git(dir, ["commit", "-q", "-m", "mine"]);
+
+    const { code, output } = check(dir, ["--history"]);
+
+    assert.equal(code, 0, output);
+    assert.match(output, /no problems found/);
+  });
+});
+
 test("--history checks every commit's author email", async () => {
   await withRepo({ "src/a.ts": "export const a = 1;\n" }, { patterns: "wrong@corp.test\n" }, async (dir) => {
     git(dir, ["commit", "-q", "-m", "first"], { GIT_AUTHOR_EMAIL: "wrong@corp.test" });
@@ -151,6 +298,6 @@ test("--history checks every commit's author email", async () => {
     const { code, output } = check(dir, ["--history"]);
 
     assert.equal(code, 1, output);
-    assert.match(output, new RegExp(`${hash}: author email matches \\.sanitize-patterns line 1`));
+    assert.match(output, new RegExp(`${hash}: author email matches \\.private/patterns line 1`));
   });
 });

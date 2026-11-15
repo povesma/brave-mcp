@@ -129,7 +129,7 @@ Rules the loader enforces:
   adopted, or would make two matches. Without `open`, the step only adopts
   an existing tab, for a script that starts from a tab you keep open.
 - **`reload`** waits for `domcontentloaded` by default: some pages, such as
-  the AWS console, keep loading long after they can be used.
+  large single-page consoles, keep loading long after they can be used.
 - **`skip_if_found`** does one short probe for a visible element, not
   `wait_for`'s repeated waits, and does not retry a daemon timeout or
   internal error; it also takes no `on_failure`, so such an error stops the
@@ -273,22 +273,16 @@ running and Brave must be open with a window of the automation profile. The
 harness starts neither, and exits with code 3 when the extension is not
 connected. A script may start Brave itself with a `run` step.
 
-## AWS login script
+## Your own scripts
 
-[scripts/aws-login.template.yaml](scripts/aws-login.template.yaml) is a
-template with placeholders. Copy it to `local/` (git-ignored), fill it in, and
-play it:
+Scripts for your own sign-ins and workflows go in `local/`, which is
+git-ignored, and which the repository's commit check refuses to publish.
+Start from `fixtures/login.yaml`, which has the same shape as a real login,
+and play your copy:
 
 ```sh
-mkdir -p local
-cp scripts/aws-login.template.yaml local/aws-login.yaml
-node dist/index.js local/aws-login.yaml
+node dist/index.js local/<your-script>.yaml
 ```
-
-Two points are known only after the first real run and are recorded in the
-task list: whether `aws login` honours `BROWSER: "true"` (no tab in the
-everyday profile), and whether it prints its URL promptly when no terminal is
-attached.
 
 ## Limitations
 

@@ -11,4 +11,3 @@ tmp
 artifacts
 apps/harness/local/
 .claude/
-.sanitize-patterns

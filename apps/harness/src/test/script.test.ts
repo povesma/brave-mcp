@@ -190,7 +190,7 @@ test("a YAML syntax error is rejected with its line number", () => {
   assert.ok(!result.ok && /^line \d+: /.test(formatProblem(result.problems[0]!)));
 });
 
-for (const shipped of ["fixtures/login.yaml", "fixtures/reload-tab.yaml", "scripts/aws-login.template.yaml"]) {
+for (const shipped of ["fixtures/login.yaml", "fixtures/reload-tab.yaml"]) {
   test(`the shipped script ${shipped} is valid`, async () => {
     const result = await loadScript(fileURLToPath(new URL(`../../${shipped}`, import.meta.url)));
 
@@ -210,7 +210,7 @@ test("use_tab with url_regex, pick and activate, and reload with defaults, are a
     [
       "name: regex-tab",
       "steps:",
-      `  - use_tab: { url_regex: "^https://[a-z0-9-]+\\\\.console\\\\.aws\\\\.amazon\\\\.com/", pick: first, activate: true }`,
+      `  - use_tab: { url_regex: "^https://[a-z0-9-]+\\\\.console\\\\.example\\\\.test/", pick: first, activate: true }`,
       "  - reload: {}",
       "",
     ].join("\n"),
