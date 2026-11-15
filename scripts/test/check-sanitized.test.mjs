@@ -272,6 +272,22 @@ test("--pre-push checks only commits the remote does not have yet", async () => 
   });
 });
 
+test("--pre-push replacing a remote commit that is not present locally still checks the outgoing commits", async () => {
+  await withRemote({ "src/a.ts": `// ${LOCAL_SECRET}\n` }, async (dir, remote) => {
+    await local(dir, "policy", policy({ remotes: [remote] }));
+    await local(dir, "patterns", `${LOCAL_SECRET}\n`);
+    git(dir, ["commit", "-q", "-m", "first"]);
+    const sha = git(dir, ["rev-parse", "HEAD"]).trim();
+    const unknownRemoteSha = "1".repeat(40);
+
+    const { code, output } = prePush(dir, remote, `refs/heads/main ${sha} refs/heads/main ${unknownRemoteSha}\n`);
+
+    assert.equal(code, 1, output);
+    assert.match(output, /src\/a\.ts: local patterns line 1/);
+    assert.doesNotMatch(output, /git log failed/);
+  });
+});
+
 test("--pre-push reports an outgoing author email that the local policy does not allow", async () => {
   await withRemote({ "src/a.ts": "export const a = 1;\n" }, async (dir, remote) => {
     await local(dir, "policy", policy({ remotes: [remote], email: "*@users.noreply.github.com" }));

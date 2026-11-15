@@ -49,6 +49,11 @@ function git(args) {
   return result.stdout;
 }
 
+function hasCommit(sha) {
+  const result = spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { timeout: GIT_TIME_LIMIT_MS });
+  return result.status === 0;
+}
+
 function localPatterns(privacyDir) {
   let text;
   try {
@@ -201,7 +206,9 @@ if (mode === "history") {
     .map((line) => line.trim().split(/\s+/))
     .filter((fields) => fields.length === 4 && !ZERO_SHA.test(fields[1]));
   for (const [, localSha, , remoteSha] of refs) {
-    const range = ZERO_SHA.test(remoteSha) ? [localSha, "--not", "--remotes"] : [`${remoteSha}..${localSha}`];
+    // A remote commit missing here (the branch was rewritten) is treated like a new branch.
+    const known = !ZERO_SHA.test(remoteSha) && hasCommit(remoteSha);
+    const range = known ? [`${remoteSha}..${localSha}`] : [localSha, "--not", "--remotes"];
     say(`reading the commits not yet on the remote (${localSha.slice(0, 7)})`);
     const log = git(["log", ...LOG_FORMAT, ...range]);
     say("checking paths, added lines and author emails");
