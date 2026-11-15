@@ -1,14 +1,15 @@
 # brave-mcp
 
-![Version](https://img.shields.io/badge/version-0.11.0-1f6feb)
+![Version](https://img.shields.io/badge/version-0.0.1-1f6feb)
 ![Brave](https://img.shields.io/badge/browser-Brave-f97316)
 ![MCP](https://img.shields.io/badge/protocol-MCP-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
-`brave-mcp` lets an AI coding agent (Codex) control your own Brave browser on your own
-machine, through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the
-standard way an agent calls external tools).
+`brave-mcp` lets an AI agent control your own Brave browser on your own machine,
+through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the standard
+way an agent calls external tools). Any MCP-compatible client — Codex, Claude Code,
+Claude Desktop, or another — can use it once the server is registered with it.
 
 The browser stays visible, everything runs locally, and each action is a named, typed
 tool such as `open_tab`, `click` or `capture_screenshot`.
@@ -230,7 +231,7 @@ The project has also been run against a real Brave browser during development.
 
 ## Tools
 
-Version `0.11.0` offers 48 tools.
+Version `0.0.1` offers 48 tools.
 
 | Group | Tools |
 |---|---|
@@ -284,7 +285,7 @@ The stack is implemented and works as a local development system.
 
 | | |
 |---|---|
-| Version | `0.11.0` |
+| Version | `0.0.1` |
 | Tools | 48 |
 | Daemon transport | localhost HTTP and a WebSocket bridge |
 | Codex transport | local MCP server over `stdio` |
@@ -302,7 +303,7 @@ The stack is implemented and works as a local development system.
 - an installer that sets up the daemon, opens the extension's store page and registers
   the MCP server in Codex
 
-**Next tools after `0.11.0`:**
+**Next tools after `0.0.1`:**
 
 1. `set_timezone`
 2. `cpu_throttle`

@@ -672,7 +672,7 @@ async function main(): Promise<void> {
   const setUserAgentJson = (await callRpc("page.setUserAgent", {
     tabId: openTabJson.result?.tabId,
     enabled: true,
-    userAgent: "SimulatedAgent/0.11.0",
+    userAgent: "SimulatedAgent/0.0.1",
   })) as {
     ok: boolean;
     result?: { enabled: boolean; userAgent: string };

@@ -469,7 +469,7 @@ async function main(): Promise<void> {
       await handleToolCall(client, "set_user_agent", {
         tabId: (openedTab as { tabId: number }).tabId,
         enabled: true,
-        userAgent: "SimulatedAgent/0.11.0",
+        userAgent: "SimulatedAgent/0.0.1",
       }),
     );
     const emulateMediaResult = emulateMediaOutputSchema.parse(

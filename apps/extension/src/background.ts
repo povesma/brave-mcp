@@ -8,7 +8,7 @@ import {
 } from "@brave-mcp/protocol";
 
 const DEFAULT_DAEMON_URL = "ws://127.0.0.1:39200/extension/connect";
-const EXTENSION_VERSION = "0.11.0";
+const EXTENSION_VERSION = "0.0.1";
 const RECONNECT_ALARM_NAME = "bridgeReconnect";
 const RECONNECT_DELAY_MINUTES = 0.5;
 // MV3 service workers need periodic websocket traffic to avoid idling out.
