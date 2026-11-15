@@ -6,44 +6,72 @@
 ![TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 
-`brave-mcp` is a full local-control stack that lets Codex operate the Brave browser through MCP.
+`brave-mcp` lets an AI coding agent (Codex) control your own Brave browser on your own
+machine, through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the
+standard way an agent calls external tools).
 
-It is built as three cooperating pieces:
+The browser stays visible, everything runs locally, and each action is a named, typed
+tool such as `open_tab`, `click` or `capture_screenshot`.
 
-- a Brave-compatible MV3 extension
-- a localhost daemon that owns pairing, routing, and runtime state
-- an MCP server that Codex can register locally
+## Contents
 
-The goal is not just "browser automation", but a shareable browser control product with a clean install story, clear security boundaries, and a stable tool contract.
+- [What You Can Do With It](#what-you-can-do-with-it)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+- [Check That It Works](#check-that-it-works)
+- [Tools](#tools)
+- [Script Harness: Run Without An Agent](#script-harness-run-without-an-agent)
+- [Security Model](#security-model)
+- [Project Status](#project-status)
+- [Repository Layout](#repository-layout)
+- [Contributing](#contributing)
+- [More Documentation](#more-documentation)
 
-## What This Project Does
+## What You Can Do With It
 
 With `brave-mcp`, Codex can:
 
-- inspect and switch tabs and windows
-- navigate pages and wait for page state changes
-- query DOM state and visible text
-- click, type, scroll, drag, upload files, and press keys
-- capture screenshots, PDFs, console logs, cookies, and network traces
-- apply page-scoped overrides like user agent and media emulation
-- intercept requests, mock responses, throttle network, and export session state
+- list, open, switch and close tabs and windows
+- navigate pages and wait for them to load
+- read page structure and visible text
+- click, type, scroll, drag, upload files and press keys
+- capture screenshots, PDFs, console logs, cookies and network traces
+- change the user agent and media settings of a page
+- intercept requests, return mock responses, slow the network down and export session
+  state
 
-This repo contains both the implementation and the machine-readable contracts for that tool surface.
+## How It Works
 
-## Getting Started
+Three parts work together:
 
-Build the workspace, start the local daemon, then load the unpacked extension from `apps/extension/dist` in `brave://extensions` and configure it with `ws://127.0.0.1:39200/extension/connect` plus the pairing secret written to `daemon-config.json`. Once the extension is connected, register the MCP server in Codex with `codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js`, start a fresh Codex session, and use the Brave tools from there. For the full step-by-step flow, see [docs/local-install.md](docs/local-install.md).
+| Part | What it is | What it does |
+|---|---|---|
+| **Extension** | A browser extension loaded into Brave | The only part that touches the browser and the pages |
+| **Daemon** | A small program on your machine, reachable at `127.0.0.1` only | Checks the pairing secret and passes requests between the other two parts |
+| **MCP server** | The program Codex starts | Offers the tools to Codex and checks their inputs |
 
-## Demo Shape
+```mermaid
+flowchart LR
+    C[Codex] --> M[MCP server]
+    M --> D[Local daemon<br/>127.0.0.1]
+    D <-->|authenticated WebSocket| E[Brave MV3 extension]
+    E --> B[Brave tabs windows DOM debugger APIs]
+```
 
-The intended interaction model is simple:
+One tool call travels like this:
 
-1. Codex calls an MCP tool such as `open_tab`, `query_selector`, or `capture_screenshot`
-2. the MCP server validates and forwards the request to the local daemon
-3. the daemon routes it to the paired Brave extension
-4. the extension performs the browser action and returns a typed result
+1. Codex calls a tool such as `open_tab`, `query_selector` or `capture_screenshot`.
+2. The MCP server checks the input and sends the request to the daemon.
+3. The daemon passes it to the paired Brave extension.
+4. The extension performs the action in the browser and returns a typed result.
 
-Example daemon RPC:
+The parts are separate on purpose: the tool list Codex sees stays stable, while all
+browser-specific code stays in the extension and the daemon.
+
+<details>
+<summary>Example request and result</summary>
+
+Request sent to the daemon:
 
 ```json
 {
@@ -59,7 +87,7 @@ Example daemon RPC:
 }
 ```
 
-Example result:
+Result:
 
 ```json
 {
@@ -72,175 +100,218 @@ Example result:
 }
 ```
 
-## Why The Architecture Looks Like This
+</details>
 
-The project uses a three-layer design on purpose.
+More detail: [docs/architecture.md](docs/architecture.md).
 
-### 1. Extension
+## Quick Start
 
-The extension is the only part that talks directly to Brave browser APIs and page DOM.
+### Before You Begin
 
-It handles:
+You need:
 
-- tabs and windows APIs
-- DOM interaction through injected scripts
-- screenshots, downloads, debugger-backed network hooks, and other browser features
-- user-visible pairing and health UI
+- Node `22` or newer
+- npm or pnpm
+- the Brave browser
+- the Codex CLI with MCP support
 
-### 2. Daemon
+### Option A: The Installer
 
-The daemon is a localhost-only control plane between Codex and the browser.
+The installer builds everything, creates the daemon config, starts the daemon, registers
+the MCP server in Codex and opens `brave://extensions` for you:
 
-It handles:
-
-- pairing secret generation and verification
-- extension connection lifecycle
-- request routing and timeouts
-- health endpoints
-- stable RPC semantics regardless of how the extension transport evolves
-
-### 3. MCP Server
-
-The MCP server is the Codex-facing layer.
-
-It handles:
-
-- MCP tool registration
-- input validation
-- mapping tool calls onto daemon RPC methods
-- clean error normalization for Codex
-
-This separation matters because it keeps the MCP layer stable while browser-specific logic stays isolated in the extension and daemon.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    C[Codex] --> M[MCP server]
-    M --> D[Local daemon<br/>127.0.0.1]
-    D <-->|authenticated WebSocket| E[Brave MV3 extension]
-    E --> B[Brave tabs windows DOM debugger APIs]
+```sh
+./install/brave-mcp-install.sh
 ```
 
-More detail is in [docs/architecture.md](docs/architecture.md).
+You then load the extension by hand (step 4 below). Flags and the PowerShell version are
+in [install/README.md](install/README.md).
 
-## Current Status
+### Option B: Step By Step
 
-The stack is implemented and working as a local development system.
+**1. Install the dependencies**
 
-Current public contract:
+```sh
+npm install
+```
 
-- version: `0.11.0`
-- tool count: `48`
-- daemon transport: localhost HTTP + WebSocket bridge
-- Codex transport: local MCP server over `stdio`
+**2. Build all packages**
 
-The current machine-readable contracts live here:
+```sh
+npm run build:protocol
+npm run build:sdk
+npm run build:daemon
+npm run build:extension
+npm run build:mcp
+npm run build:harness
+```
+
+**3. Start the daemon**
+
+```sh
+node apps/daemon/dist/index.js --port 39200 --config-dir /tmp/brave-mcp-smoke
+```
+
+Or let the repository start the local stack for you:
+
+```sh
+npm run launch:brave
+```
+
+The daemon writes its pairing secret to `/tmp/brave-mcp-smoke/daemon-config.json`.
+
+**4. Load the extension in Brave**
+
+1. Open `brave://extensions`.
+2. Turn on `Developer mode`.
+3. Click `Load unpacked` and select `apps/extension/dist`.
+4. Open the extension's options page and set:
+   - daemon URL: `ws://127.0.0.1:39200/extension/connect`
+   - auth token: the `secret` value from `daemon-config.json`
+5. If it does not connect, click `Reconnect Now`.
+
+**5. Register the MCP server in Codex**
+
+Replace `/absolute/path/to` with the full path of this repository:
+
+```sh
+codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+```
+
+**6. Start a new Codex session**
+
+The Brave tools appear only in a session started after the registration.
+
+The same flow with a smoke test is in [docs/local-install.md](docs/local-install.md).
+
+## Check That It Works
+
+### Is the daemon connected to the extension?
+
+```sh
+curl -s http://127.0.0.1:39200/readyz | jq
+```
+
+Everything is ready when the answer looks like this:
+
+```json
+{
+  "ok": true,
+  "ready": true,
+  "extensionConnected": true,
+  "paired": true
+}
+```
+
+If `extensionConnected` or `paired` is `false`, check the daemon URL and the auth token
+on the extension's options page.
+
+The daemon's local endpoints are `GET /healthz`, `GET /readyz` and `POST /rpc`.
+
+### Do the packages pass their own checks?
+
+```sh
+npm run verify:protocol
+npm run verify:daemon
+npm run verify:mcp
+npm run verify:extension
+npm run verify:harness
+```
+
+| Command | What it checks |
+|---|---|
+| `verify:protocol` | The schemas and contracts are valid |
+| `verify:daemon` | Daemon requests work against a simulated extension |
+| `verify:mcp` | The MCP tools are wired to the daemon |
+| `verify:extension` | The extension builds correctly |
+| `verify:harness` | The script harness (loading, daemon client, commands, playing, pause and resume) works against a stand-in daemon |
+
+The project has also been run against a real Brave browser during development.
+
+## Tools
+
+Version `0.11.0` offers 48 tools.
+
+| Group | Tools |
+|---|---|
+| **Tabs and windows** | `list_tabs`, `list_windows`, `get_active_tab`, `get_tab_info`, `get_window_info`, `open_tab`, `new_window`, `close_tab`, `close_window`, `switch_to_tab`, `focus_tab`, `set_viewport` |
+| **Navigation** | `navigate`, `reload_tab`, `back`, `forward`, `wait_for_navigation`, `wait_for_idle` |
+| **Reading the page** | `query_selector`, `query_elements`, `wait_for_selector`, `get_visible_text`, `get_dom`, `elements_from_point` |
+| **Acting on the page** | `click`, `hover`, `type_text`, `select_option`, `press_key`, `scroll_to`, `drag_and_drop`, `upload_file` |
+| **Capture and diagnostics** | `capture_screenshot`, `capture_pdf`, `get_console_logs`, `download_asset`, `execute_javascript`, `network_log`, `cookie_access`, `session_export`, `har_export` |
+| **Network and storage** | `request_intercept`, `mock_response`, `throttle_network`, `clear_storage`, `grant_permissions` |
+| **Emulation** | `set_user_agent`, `emulate_media` |
+
+`geolocation_override` was built as a prototype and then removed from the tool list,
+because it was not reliable enough in Brave.
+
+The exact inputs and outputs of every tool are defined in machine-readable files:
 
 - [Tool catalog](specs/tools/brave-tools.schema.json)
 - [Daemon RPC schema](specs/rpc/daemon-rpc.schema.json)
 
-The architectural design document lives here:
+## Script Harness: Run Without An Agent
 
-- [Implementation blueprint](docs/implementation-blueprint.md)
+`apps/harness` plays a YAML file of browser steps and local commands through the daemon,
+with no AI agent involved. An example is a login that types credentials and a one-time
+code fetched from command-line tools.
 
-The evolving delivery checklist lives here:
-
-- [Tool implementation checklist](docs/tool-implementation-checklist.md)
-
-Supporting docs:
-
-- [Architecture notes](docs/architecture.md)
-- [Local install and smoke test guide](docs/local-install.md)
-- [Contributing guide](CONTRIBUTING.md)
-
-## Tool Coverage
-
-The implemented tools are grouped roughly like this.
-
-### Browser And Window Control
-
-- `list_tabs`
-- `list_windows`
-- `get_active_tab`
-- `get_tab_info`
-- `get_window_info`
-- `open_tab`
-- `new_window`
-- `close_tab`
-- `close_window`
-- `switch_to_tab`
-- `focus_tab`
-- `set_viewport`
-
-### Navigation
-
-- `navigate`
-- `reload_tab`
-- `back`
-- `forward`
-- `wait_for_navigation`
-- `wait_for_idle`
-
-### DOM Discovery And Read Operations
-
-- `query_selector`
-- `query_elements`
-- `wait_for_selector`
-- `get_visible_text`
-- `get_dom`
-- `elements_from_point`
-
-### Interaction
-
-- `click`
-- `hover`
-- `type_text`
-- `select_option`
-- `press_key`
-- `scroll_to`
-- `drag_and_drop`
-- `upload_file`
-
-### Capture And Diagnostics
-
-- `capture_screenshot`
-- `capture_pdf`
-- `get_console_logs`
-- `download_asset`
-- `execute_javascript`
-- `network_log`
-- `cookie_access`
-- `session_export`
-- `har_export`
-
-### Traffic And Storage Control
-
-- `request_intercept`
-- `mock_response`
-- `throttle_network`
-- `clear_storage`
-- `grant_permissions`
-
-### Emulation
-
-- `set_user_agent`
-- `emulate_media`
-
-`geolocation_override` was prototyped but intentionally removed from the public tool list because it was not reliable enough in Brave to keep in the supported surface.
+The script format, exit codes, pause and resume, and the setup of a dedicated browser
+profile are described in [apps/harness/README.md](apps/harness/README.md).
 
 ## Security Model
 
-This project is intentionally local-first and explicit about authority.
+The project is local and explicit about who may do what:
 
-- The daemon binds to `127.0.0.1` only.
-- The extension authenticates with a per-user secret.
-- MCP never talks directly to the browser; it talks to the daemon.
-- Browser-mutating tools are explicit and typed.
-- The extension only works after pairing.
-- The daemon can report health and pairing state without exposing browser content.
+- The daemon listens on `127.0.0.1` only.
+- The extension must present a per-user secret, and works only after pairing.
+- The MCP server never talks to the browser directly; it talks to the daemon.
+- Every tool that changes the browser is a named tool with typed inputs.
+- The daemon can report its health and pairing state without revealing browser content.
 
-This is not meant to be an invisible headless browser farm. The browser is user-visible and the control channel is local.
+The browser is visible to you and the control channel stays on your machine.
+
+### What This Project Is Not
+
+- a stealth browser automation framework
+- a remote cloud browser grid
+- a browser exploitation toolkit
+- one untyped endpoint that runs arbitrary browser actions
+
+## Project Status
+
+The stack is implemented and works as a local development system.
+
+| | |
+|---|---|
+| Version | `0.11.0` |
+| Tools | 48 |
+| Daemon transport | localhost HTTP and a WebSocket bridge |
+| Codex transport | local MCP server over `stdio` |
+
+**Not done yet:**
+
+- A finished public installer. The current installer works from a local copy of this
+  repository only.
+- Screenshots and release downloads.
+
+**Planned distribution:**
+
+- the extension published for Brave users through the Chrome Web Store
+- the daemon and the MCP server shipped as downloadable programs or packages
+- an installer that sets up the daemon, opens the extension's store page and registers
+  the MCP server in Codex
+
+**Next tools after `0.11.0`:**
+
+1. `set_timezone`
+2. `cpu_throttle`
+3. `device_metrics_override`
+4. `set_extra_headers`
+5. `download_control`
+
+Progress is tracked in the
+[tool implementation checklist](docs/tool-implementation-checklist.md).
 
 ## Repository Layout
 
@@ -254,7 +325,7 @@ This is not meant to be an invisible headless browser farm. The browser is user-
 ├── docs
 │   ├── implementation-blueprint.md
 │   └── tool-implementation-checklist.md
-├── install         # installer placeholders and packaging notes
+├── install         # installer scripts and packaging notes
 ├── packages
 │   ├── protocol    # shared schemas and contracts
 │   └── sdk         # test/simulation helpers
@@ -263,181 +334,32 @@ This is not meant to be an invisible headless browser farm. The browser is user-
     └── tools
 ```
 
-Package-level notes:
-
-- [apps/extension/README.md](apps/extension/README.md)
-- [apps/daemon/README.md](apps/daemon/README.md)
-- [apps/mcp/README.md](apps/mcp/README.md)
-- [apps/harness/README.md](apps/harness/README.md)
-- [packages/protocol/README.md](packages/protocol/README.md)
-- [packages/sdk/README.md](packages/sdk/README.md)
-- [install/README.md](install/README.md)
-
-## Local Development Quick Start
-
-### Prerequisites
-
-- Node `22+`
-- npm or pnpm
-- Brave browser
-- Codex CLI with MCP support
-
-### Repo-Local Installer
-
-For the current local-repo flow, you can let the installer build the artifacts, create the daemon config, register Codex, and open Brave for extension setup:
-
-```sh
-./install/brave-mcp-install.sh
-```
-
-See [install/README.md](install/README.md) for flags and the PowerShell entrypoint.
-
-### Build Everything
-
-```sh
-npm run build:protocol
-npm run build:sdk
-npm run build:daemon
-npm run build:extension
-npm run build:mcp
-npm run build:harness
-```
-
-### Start The Daemon
-
-```sh
-node apps/daemon/dist/index.js --port 39200 --config-dir /tmp/brave-mcp-smoke
-```
-
-Or let the repo launch the local stack for you:
-
-```sh
-npm run launch:brave
-```
-
-The daemon writes its pairing secret to:
-
-```text
-/tmp/brave-mcp-smoke/daemon-config.json
-```
-
-### Load The Extension In Brave
-
-1. Open `brave://extensions`
-2. Enable `Developer mode`
-3. Click `Load unpacked`
-4. Select `apps/extension/dist`
-
-Then open the extension options page and configure:
-
-- daemon URL: `ws://127.0.0.1:39200/extension/connect`
-- auth token: the `secret` from `daemon-config.json`
-
-### Register The MCP Server In Codex
-
-```sh
-codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
-```
-
-After that, start a fresh Codex session so the updated tool list is visible in the session.
-
-For a fuller step-by-step setup and smoke test flow, see [docs/local-install.md](docs/local-install.md).
-
-## Health Checks
-
-The daemon exposes useful local endpoints:
-
-- `GET /healthz`
-- `GET /readyz`
-- `POST /rpc`
-
-Example:
-
-```sh
-curl -s http://127.0.0.1:39200/readyz | jq
-```
-
-Expected fields include:
-
-- `ok`
-- `ready`
-- `extensionConnected`
-- `paired`
-
-## Verification Commands
-
-The repo includes package-level verification flows:
-
-```sh
-npm run verify:protocol
-npm run verify:daemon
-npm run verify:mcp
-npm run verify:extension
-npm run verify:harness
-```
-
-These checks cover:
-
-- schema and contract validity
-- daemon RPC behavior with a simulated extension bridge
-- MCP tool wiring
-- extension build integrity
-- the script harness (loader, daemon client, command runner, engine, pause and resume) against a scripted stand-in daemon
-
-## Script Harness
-
-`apps/harness` plays a YAML script of browser steps and local commands
-through the daemon, with no AI agent involved — for example a login that
-types credentials and a one-time code fetched from command-line tools. See
-[apps/harness/README.md](apps/harness/README.md) for the script format, exit
-codes, pause and resume, and the dedicated-profile setup.
-
-In addition to that, the project has been exercised with real Brave smoke tests during implementation.
-
-## Public Distribution Plan
-
-The long-term public packaging model is:
-
-- publish the extension for Brave users through the Chrome Web Store
-- ship the daemon and MCP server as downloadable local binaries or package-managed artifacts
-- provide installer flows that configure the daemon, open the extension listing, and register the MCP server in Codex
-
-The architecture and installer scaffolding for that plan already exist in this repo, but the polished public installer/distribution pipeline is still in progress.
-
-## Screenshots And Demo Assets
-
-The repo does not yet include polished screenshots or release artifacts. That is still missing work, not a deliberate omission. The current focus has been the actual runtime stack and live Brave verification.
-
-## Non-Goals
-
-This project is intentionally not trying to be:
-
-- a stealth browser automation framework
-- a remote cloud browser grid
-- a browser exploitation toolkit
-- a giant untyped "run arbitrary browser magic" endpoint
-
-The design bias here is explicit tools, typed contracts, local visibility, and repairable behavior.
-
-## What Is Next
-
-The next planned batch after `0.11.0` is tracked in the checklist and currently targets:
-
-1. `set_timezone`
-2. `cpu_throttle`
-3. `device_metrics_override`
-4. `set_extra_headers`
-5. `download_control`
-
 ## Contributing
 
-If you contribute, keep the main project rule intact:
-
-Every tool is only considered implemented when all four layers exist:
+A tool counts as implemented only when all four layers exist:
 
 - protocol schema
 - daemon bridge support
 - extension runtime support
 - MCP exposure
 
-And every tool should be verified in at least one automated or real-browser path before being marked complete.
+Every tool must also be verified in at least one automated test or one real-browser run
+before it is marked complete.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+## More Documentation
+
+| Document | Content |
+|---|---|
+| [docs/local-install.md](docs/local-install.md) | Step-by-step local install and smoke test |
+| [docs/architecture.md](docs/architecture.md) | Architecture notes |
+| [docs/implementation-blueprint.md](docs/implementation-blueprint.md) | The design document |
+| [docs/tool-implementation-checklist.md](docs/tool-implementation-checklist.md) | Delivery checklist and planned tools |
+| [install/README.md](install/README.md) | Installer flags and limits |
+| [apps/extension/README.md](apps/extension/README.md) | Extension package notes |
+| [apps/daemon/README.md](apps/daemon/README.md) | Daemon package notes |
+| [apps/mcp/README.md](apps/mcp/README.md) | MCP server package notes |
+| [apps/harness/README.md](apps/harness/README.md) | Script harness guide |
+| [packages/protocol/README.md](packages/protocol/README.md) | Shared schemas |
+| [packages/sdk/README.md](packages/sdk/README.md) | Test and simulation helpers |
