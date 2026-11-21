@@ -6,7 +6,7 @@ This guide is for developers running the current repo directly.
 
 - Node `22+`
 - Brave browser
-- Codex CLI with MCP support
+- an MCP-compatible agent, such as Claude Code or Codex
 
 ## 1. Build The Workspace
 
@@ -68,13 +68,21 @@ Expected shape:
 }
 ```
 
-## 5. Register The MCP Server In Codex
+## 5. Register The MCP Server With Your Agent
+
+Claude Code (`-s user` makes the tools available in every project):
+
+```sh
+claude mcp add -s user brave-mcp -e BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+```
+
+Codex:
 
 ```sh
 codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
-Then start a fresh Codex session.
+Then start a fresh agent session.
 
 ## 6. Smoke Test
 
