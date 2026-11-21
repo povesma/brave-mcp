@@ -5,6 +5,8 @@
 ![MCP](https://img.shields.io/badge/protocol-MCP-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
+[![Built with embo](https://img.shields.io/badge/built%20with-embo-7c3aed)](https://github.com/povesma/embo)
+![Built with embo](https://img.shields.io/badge/built%20with-embo-7c3aed)
 
 `brave-mcp` lets an AI agent control your own Brave browser on your own machine,
 through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the standard
