@@ -589,7 +589,7 @@ export function getToolDefinitions() {
   return implementedTools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    inputSchema: zodToJsonSchema(tool.inputSchema, tool.name),
+    inputSchema: zodToJsonSchema(tool.inputSchema, { $refStrategy: "none", target: "jsonSchema7" }),
   }));
 }
 

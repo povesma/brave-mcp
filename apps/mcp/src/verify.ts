@@ -58,12 +58,18 @@ import { connectSimulatedExtensionBridge } from "@brave-mcp/sdk";
 import { resolveRuntimeConfig } from "./config.js";
 import { DaemonClient } from "./daemon-client.js";
 import { shutdownAutoStartedDaemon } from "./daemon-bootstrap.js";
-import { handleToolCall, implementedTools } from "./tools.js";
+import { getToolDefinitions, handleToolCall, implementedTools } from "./tools.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+// MCP clients reject the whole tools/list when any input schema lacks a top-level object type.
+for (const tool of getToolDefinitions()) {
+  const schema = tool.inputSchema as { type?: unknown };
+  assert(schema.type === "object", `Tool ${tool.name} input schema must have top-level "type": "object"`);
 }
 
 async function getFreePort(): Promise<number> {
