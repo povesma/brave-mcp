@@ -1,0 +1,46 @@
+# Fixture flow with the shape of a real login. Play it from apps/harness:
+#
+#   node fixtures/site-server.mjs          (in a second terminal, first)
+#   node dist/index.js fixtures/login.yaml
+#
+# It needs the daemon running and the extension connected. See README.md.
+name: fixture-login
+pause_timeout_s: 300
+
+steps:
+  # Part 1: sign in on the fixture site with two captured values and a one-time code.
+  - open_tab: { url: "http://127.0.0.1:39310/" }
+  - wait_for: { selector: "#username", timeout_s: 15 }
+  - run: { cmd: [node, fixtures/commands/print-value.mjs, fixture-user], capture: user }
+  - run: { cmd: [node, fixtures/commands/print-value.mjs, fixture-pass-9], capture: pass }
+  - type: { selector: "#username", text: "${user}" }
+  - type: { selector: "#password", text: "${pass}" }
+  - click: { selector: "#signin" }
+  - wait_for:
+      selector: "#mfa"
+      timeout_s: 20
+      on_failure:
+        retry: { times: 1, wait_s: 2 }
+        then: pause
+  - run: { cmd: [node, fixtures/commands/print-value.mjs, "246810"], capture: otp }
+  - type: { selector: "#mfa", text: "${otp}" }
+  - click: { selector: "#submit" }
+  - wait_for: { selector: "#signed-in", timeout_s: 20 }
+  - close_tab: {}
+
+  # Part 2: a command-line login that prints a URL and waits for the browser.
+  - start:
+      id: cli
+      cmd: [node, fixtures/commands/fake-cli-login.mjs]
+      capture_match:
+        var: url
+        pattern: "http://127\\.0\\.0\\.1:39311/authorize\\S+"
+      timeout_s: 20
+  - use_tab:
+      url_prefix: "http://127.0.0.1:39311/authorize"
+      wait_s: 2
+      open: "${url}"
+  - wait_for: { selector: "#confirm", timeout_s: 15 }
+  - click: { selector: "#confirm" }
+  - await: { id: cli, timeout_s: 30 }
+  - close_tab: {}

@@ -178,7 +178,7 @@ export async function createDaemonApp(
     return {
       ok: true,
       service: "brave-mcp-daemon",
-      version: "0.11.0",
+      version: "0.0.1",
       startedAt: state.startedAt,
       toolCount: toolCatalog.length,
       extensionConnected: state.extensionConnected,

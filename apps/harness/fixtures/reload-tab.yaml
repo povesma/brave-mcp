@@ -1,0 +1,19 @@
+# Fixture flow for finding an open tab by a regular expression and reloading
+# it. Play it from apps/harness, with the fixture site running:
+#
+#   node fixtures/site-server.mjs          (in a second terminal, first)
+#   node dist/index.js fixtures/reload-tab.yaml
+#
+# Two fixture tabs are opened; use_tab takes the first match, brings it to the
+# front and reloads it. Both tabs are closed at the end.
+name: fixture-reload-tab
+
+steps:
+  - open_tab: { url: "http://127.0.0.1:39310/?tab=one" }
+  - open_tab: { url: "http://127.0.0.1:39310/?tab=two" }
+  - use_tab: { url_regex: "^http://127\\.0\\.0\\.1:39310/\\?tab=", pick: first, activate: true, wait_s: 1 }
+  - reload: {}
+  - wait_for: { selector: "#username", timeout_s: 15 }
+  - close_tab: {}
+  - use_tab: { url_regex: "^http://127\\.0\\.0\\.1:39310/\\?tab=", wait_s: 1 }
+  - close_tab: {}

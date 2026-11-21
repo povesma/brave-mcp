@@ -64,7 +64,7 @@ assert(errorResponseResult.success, "Sample daemon error response should parse")
 const bridgeHelloResult = bridgeClientMessageSchema.safeParse({
   type: "hello",
   browser: "brave",
-  version: "0.11.0",
+  version: "0.0.1",
 });
 assert(bridgeHelloResult.success, "Sample bridge hello should parse");
 
