@@ -5,11 +5,12 @@
 ![MCP](https://img.shields.io/badge/protocol-MCP-0ea5e9)
 ![TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6)
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
+[![Built with embo](https://img.shields.io/badge/built%20with-embo-7c3aed)](https://github.com/povesma/embo)
 
 `brave-mcp` lets an AI agent control your own Brave browser on your own machine,
 through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the standard
-way an agent calls external tools). Any MCP-compatible client — Codex, Claude Code,
-Claude Desktop, or another — can use it once the server is registered with it.
+way an agent calls external tools). Any MCP-compatible agent can use it — for example
+Claude Code or Codex — once the server is registered with it.
 
 The browser stays visible, everything runs locally, and each action is a named, typed
 tool such as `open_tab`, `click` or `capture_screenshot`.
@@ -30,7 +31,7 @@ tool such as `open_tab`, `click` or `capture_screenshot`.
 
 ## What You Can Do With It
 
-With `brave-mcp`, Codex can:
+With `brave-mcp`, your AI agent can:
 
 - list, open, switch and close tabs and windows
 - navigate pages and wait for them to load
@@ -49,11 +50,11 @@ Three parts work together:
 |---|---|---|
 | **Extension** | A browser extension loaded into Brave | The only part that touches the browser and the pages |
 | **Daemon** | A small program on your machine, reachable at `127.0.0.1` only | Checks the pairing secret and passes requests between the other two parts |
-| **MCP server** | The program Codex starts | Offers the tools to Codex and checks their inputs |
+| **MCP server** | The program your agent starts | Offers the tools to the agent and checks their inputs |
 
 ```mermaid
 flowchart LR
-    C[Codex] --> M[MCP server]
+    C[AI agent<br/>Claude Code, Codex, ...] --> M[MCP server]
     M --> D[Local daemon<br/>127.0.0.1]
     D <-->|authenticated WebSocket| E[Brave MV3 extension]
     E --> B[Brave tabs windows DOM debugger APIs]
@@ -61,12 +62,12 @@ flowchart LR
 
 One tool call travels like this:
 
-1. Codex calls a tool such as `open_tab`, `query_selector` or `capture_screenshot`.
+1. The agent calls a tool such as `open_tab`, `query_selector` or `capture_screenshot`.
 2. The MCP server checks the input and sends the request to the daemon.
 3. The daemon passes it to the paired Brave extension.
 4. The extension performs the action in the browser and returns a typed result.
 
-The parts are separate on purpose: the tool list Codex sees stays stable, while all
+The parts are separate on purpose: the tool list the agent sees stays stable, while all
 browser-specific code stays in the extension and the daemon.
 
 <details>
@@ -114,16 +115,19 @@ You need:
 - Node `22` or newer
 - npm or pnpm
 - the Brave browser
-- the Codex CLI with MCP support
+- an MCP-compatible agent, such as Claude Code or Codex
 
 ### Option A: The Installer
 
-The installer builds everything, creates the daemon config, starts the daemon, registers
-the MCP server in Codex and opens `brave://extensions` for you:
+The installer builds everything, creates the daemon config, starts the daemon, opens
+`brave://extensions` for you, and registers the MCP server with Codex:
 
 ```sh
 ./install/brave-mcp-install.sh
 ```
+
+The installer registers only with Codex so far. With Claude Code or another agent, run
+it with `--skip-codex` and register the server yourself (step 5 below).
 
 You then load the extension by hand (step 4 below). Flags and the PowerShell version are
 in [install/README.md](install/README.md).
@@ -171,15 +175,27 @@ The daemon writes its pairing secret to `/tmp/brave-mcp-smoke/daemon-config.json
    - auth token: the `secret` value from `daemon-config.json`
 5. If it does not connect, click `Reconnect Now`.
 
-**5. Register the MCP server in Codex**
+**5. Register the MCP server with your agent**
 
-Replace `/absolute/path/to` with the full path of this repository:
+Replace `/absolute/path/to` with the full path of this repository.
+
+Claude Code (`-s user` makes the tools available in every project):
+
+```sh
+claude mcp add -s user brave-mcp -e BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+```
+
+Codex:
 
 ```sh
 codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
-**6. Start a new Codex session**
+Another MCP client: add a `stdio` server that runs
+`node /absolute/path/to/apps/mcp/dist/index.js` with the environment variable
+`BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke`.
+
+**6. Start a new agent session**
 
 The Brave tools appear only in a session started after the registration.
 
@@ -288,7 +304,7 @@ The stack is implemented and works as a local development system.
 | Version | `0.0.1` |
 | Tools | 48 |
 | Daemon transport | localhost HTTP and a WebSocket bridge |
-| Codex transport | local MCP server over `stdio` |
+| Agent transport | local MCP server over `stdio` |
 
 **Not done yet:**
 
@@ -301,7 +317,7 @@ The stack is implemented and works as a local development system.
 - the extension published for Brave users through the Chrome Web Store
 - the daemon and the MCP server shipped as downloadable programs or packages
 - an installer that sets up the daemon, opens the extension's store page and registers
-  the MCP server in Codex
+  the MCP server with Claude Code, Codex or another agent
 
 **Next tools after `0.0.1`:**
 
@@ -322,7 +338,7 @@ Progress is tracked in the
 │   ├── daemon      # localhost bridge and RPC service
 │   ├── extension   # Brave-compatible MV3 extension
 │   ├── harness     # agent-free player for YAML browser-and-command scripts
-│   └── mcp         # Codex-facing MCP server
+│   └── mcp         # MCP server the agent talks to
 ├── docs
 │   ├── implementation-blueprint.md
 │   └── tool-implementation-checklist.md
