@@ -6,6 +6,7 @@ import { connectSimulatedExtensionBridge } from "@brave-mcp/sdk";
 
 import { createDaemonApp } from "./app.js";
 import { configFilePath } from "./config.js";
+import { runProfileScenarios } from "./verify-profiles.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -790,6 +791,8 @@ async function main(): Promise<void> {
   await simulatedBridge.close();
   await app.close();
 
+  const verifiedProfileScenarios = await runProfileScenarios();
+
   console.log(
     JSON.stringify(
       {
@@ -844,6 +847,7 @@ async function main(): Promise<void> {
           "windows.close",
         ],
         configDir: state.configDir,
+        verifiedProfileScenarios,
       },
       null,
       2,
