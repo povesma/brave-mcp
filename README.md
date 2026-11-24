@@ -7,13 +7,20 @@
 ![License](https://img.shields.io/badge/license-MIT-16a34a)
 [![Built with embo](https://img.shields.io/badge/built%20with-embo-7c3aed)](https://github.com/povesma/embo)
 
-`brave-mcp` lets an AI agent control your own Brave browser on your own machine,
-through [MCP](https://modelcontextprotocol.io) (Model Context Protocol, the standard
-way an agent calls external tools). Any MCP-compatible agent can use it — for example
-Claude Code or Codex — once the server is registered with it.
+`brave-mcp` controls your own Brave browser on your own machine, in two ways:
 
-The browser stays visible, everything runs locally, and each action is a named, typed
-tool such as `open_tab`, `click` or `capture_screenshot`.
+- **For AI agents, through MCP.** An agent calls named, typed tools such as `open_tab`,
+  `click` or `capture_screenshot` through [MCP](https://modelcontextprotocol.io) (Model
+  Context Protocol, the standard way an agent calls external tools). Any MCP-compatible
+  agent can use it, for example Claude Code or Codex.
+- **Deterministic workflows from the command line.** A workflow player
+  (`brave-mcp-play`) runs a YAML workflow of browser steps and local commands the same
+  way every time, with branches, retries, pause and resume, and exit codes for
+  schedulers and pipelines. An AI agent is the best tool to write the workflow; running
+  it needs no agent.
+
+Both drive the same browser through the same local daemon. The browser stays visible,
+everything runs locally, and one daemon serves several Brave profiles at once.
 
 ## Contents
 
@@ -22,7 +29,7 @@ tool such as `open_tab`, `click` or `capture_screenshot`.
 - [Quick Start](#quick-start)
 - [Check That It Works](#check-that-it-works)
 - [Tools](#tools)
-- [Script Harness: Run Without An Agent](#script-harness-run-without-an-agent)
+- [Workflows From The Command Line](#workflows-from-the-command-line)
 - [Security Model](#security-model)
 - [Project Status](#project-status)
 - [Repository Layout](#repository-layout)
@@ -41,23 +48,39 @@ With `brave-mcp`, your AI agent can:
 - change the user agent and media settings of a page
 - intercept requests, return mock responses, slow the network down and export session
   state
+- choose which Brave profile each action runs in
+
+Without an agent, a workflow file can:
+
+- open or adopt tabs, navigate, reload, wait for elements, type, click and press keys
+- run local commands and use their output, such as a password or a one-time code, in
+  later steps, without printing or storing it
+- start a command in the background, take a URL from its output, and wait for it to end
+- retry a step, try alternative selectors, skip ahead when an element is already there,
+  and jump between branches
+- pause when a step gets stuck, let you correct the file, and resume where it stopped
+- run in a chosen Brave profile, and end with an exit code that says what happened
 
 ## How It Works
 
-Three parts work together:
+Four parts work together:
 
 | Part | What it is | What it does |
 |---|---|---|
-| **Extension** | A browser extension loaded into Brave | The only part that touches the browser and the pages |
-| **Daemon** | A small program on your machine, reachable at `127.0.0.1` only | Checks the pairing secret and passes requests between the other two parts |
+| **Extension** | A browser extension loaded into each Brave profile you want to control | The only part that touches the browser and the pages |
+| **Daemon** | A small program on your machine, reachable at `127.0.0.1` only | Checks the pairing secret and routes each request to the right profile's extension |
 | **MCP server** | The program your agent starts | Offers the tools to the agent and checks their inputs |
+| **Workflow player** | A command-line program (`apps/harness`) | Plays a YAML workflow through the daemon, without an agent |
 
 ```mermaid
 flowchart LR
     C[AI agent<br/>Claude Code, Codex, ...] --> M[MCP server]
+    W[Workflow player<br/>YAML workflow] --> D
     M --> D[Local daemon<br/>127.0.0.1]
-    D <-->|authenticated WebSocket| E[Brave MV3 extension]
-    E --> B[Brave tabs windows DOM debugger APIs]
+    D <-->|authenticated WebSocket| E1[Extension<br/>profile Work]
+    D <-->|authenticated WebSocket| E2[Extension<br/>profile Home]
+    E1 --> B[Brave tabs windows DOM debugger APIs]
+    E2 --> B
 ```
 
 One tool call travels like this:
@@ -80,10 +103,28 @@ a nickname, set on the extension's options page.
   browser tool accepts; `list_profiles` shows the connected nicknames. An action without a
   name then fails and lists them; nothing is remembered between actions.
 - A tab or window number is looked up only in the named profile.
-- An agent registration can set a default profile, and lock itself to it, with
-  `BRAVE_MCP_PROFILE` and `BRAVE_MCP_PROFILE_LOCK` (see [apps/mcp/README.md](apps/mcp/README.md)).
 - A workflow run chooses its profile with `--profile` or `BRAVE_MCP_PROFILE` (see
-  [apps/harness/README.md](apps/harness/README.md)).
+  [Workflows From The Command Line](#workflows-from-the-command-line)).
+
+An agent registration can also carry two settings, as environment variables of the MCP
+server:
+
+| Variable | Effect |
+|---|---|
+| `BRAVE_MCP_PROFILE=<nickname>` | **Default profile.** A tool call without a `profile` runs in this profile, even when several are connected. The agent can still name another profile. If this profile is not connected, calls fail with "Profile … is offline"; they never fall back to another profile. |
+| `BRAVE_MCP_PROFILE_LOCK=1` | **Lock** (`1` or `true`). The registration works in the default profile only: a call naming another profile is refused before it reaches the daemon, `list_profiles` shows only the default profile, and no message names another profile. Needs `BRAVE_MCP_PROFILE`; without it the server does not start. |
+
+Set them with `-e` when you register the server, for example to keep one project's agent
+in the `Work` profile:
+
+```sh
+claude mcp add -s project brave-mcp -e BRAVE_MCP_PROFILE=Work -e BRAVE_MCP_PROFILE_LOCK=1 -- node /absolute/path/to/apps/mcp/dist/index.js
+```
+
+They are read only from the environment; arguments after `node …/index.js` are ignored.
+The lock prevents mistakes by the agent. It is **not a security boundary**: any program
+that can read the pairing secret can call the daemon directly and reach every connected
+profile. More in [apps/mcp/README.md](apps/mcp/README.md).
 
 <details>
 <summary>Example request and result</summary>
@@ -216,6 +257,10 @@ Another MCP client: add a `stdio` server that runs
 `node /absolute/path/to/apps/mcp/dist/index.js` with the environment variable
 `BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke`.
 
+Optional: to give the registration a default profile, or lock it to one, add
+`-e BRAVE_MCP_PROFILE=<nickname>` and `-e BRAVE_MCP_PROFILE_LOCK=1` (Codex: `--env`). See
+[Several Brave Profiles](#several-brave-profiles) for what they do.
+
 **6. Start a new agent session**
 
 The Brave tools appear only in a session started after the registration.
@@ -248,6 +293,14 @@ nickname shows its reason there.
 
 The daemon's local endpoints are `GET /healthz`, `GET /readyz` and `POST /rpc`.
 
+### "The brave-mcp daemon … is too old"
+
+The MCP server and the workflow player refuse a daemon whose `/healthz` reports no
+`protocolVersion` or an older one. This happens after an upgrade, when a daemon started
+by the previous version is still running. Stop that daemon process. The MCP server
+starts the current daemon by itself the next time it starts; the workflow player never
+starts one, so start it with step 3 of the Quick Start.
+
 ### Do the packages pass their own checks?
 
 ```sh
@@ -260,11 +313,11 @@ npm run verify:harness
 
 | Command | What it checks |
 |---|---|
-| `verify:protocol` | The schemas and contracts are valid |
-| `verify:daemon` | Daemon requests work against a simulated extension |
-| `verify:mcp` | The MCP tools are wired to the daemon |
-| `verify:extension` | The extension builds correctly |
-| `verify:harness` | The script harness (loading, daemon client, commands, playing, pause and resume) works against a stand-in daemon |
+| `verify:protocol` | The schemas and contracts are valid, and the spec files in `specs/` match them |
+| `verify:daemon` | Daemon requests and the profile rules (connection, routing, refusals) work against simulated extensions |
+| `verify:mcp` | The MCP tools are wired to the daemon, including the `profile` input, default profile and lock |
+| `verify:extension` | The extension builds, and its nickname and refusal logic passes its unit tests |
+| `verify:harness` | The workflow player (loading, daemon client, commands, playing, pause and resume, profile choice) works against a stand-in daemon |
 
 The project has also been run against a real Brave browser during development.
 
@@ -291,14 +344,53 @@ The exact inputs and outputs of every tool are defined in machine-readable files
 - [Tool catalog](specs/tools/brave-tools.schema.json)
 - [Daemon RPC schema](specs/rpc/daemon-rpc.schema.json)
 
-## Script Harness: Run Without An Agent
+## Workflows From The Command Line
 
-`apps/harness` plays a YAML file of browser steps and local commands through the daemon,
-with no AI agent involved. An example is a login that types credentials and a one-time
-code fetched from command-line tools.
+`apps/harness` is a workflow player: it plays a YAML file of browser steps and local
+commands through the daemon, with no AI agent involved. The same file gives the same
+steps on every run, so it suits repeated jobs such as a sign-in that needs a password and
+a one-time code from command-line tools, run by hand, by a scheduler or as a step of a
+larger pipeline.
 
-The script format, exit codes, pause and resume, and the setup of a dedicated browser
-profile are described in [apps/harness/README.md](apps/harness/README.md).
+```yaml
+name: example-login
+precondition:                   # exit 0 means already signed in: nothing runs
+  cmd: [check-session]
+steps:
+  - open_tab: { url: "https://signin.example.com" }
+  - run: { cmd: [get-user], capture: user }
+  - type: { selector: "#username", text: "${user}" }
+  - click: { selector: "#signin" }
+  - wait_for:
+      selector: "#mfa"
+      on_failure:
+        selectors: ["input[name=mfaCode]"]
+        retry: { times: 2, wait_s: 3 }
+        then: pause             # stop here, let me fix the file, then resume
+```
+
+```sh
+node apps/harness/dist/index.js --profile Work local/example-login.yaml
+```
+
+What the player offers:
+
+| Feature | What it does |
+|---|---|
+| 14 step types | Tabs (`open_tab`, `use_tab`, `close_tab`), pages (`navigate`, `reload`, `wait_for`, `type`, `click`, `press_key`), commands (`run`, `start`, `await`) and branches (`skip_if_found`, `jump`) |
+| Captured values | A command's output, or a pattern in a background command's output, becomes a variable for later steps; it is masked in all output and never written to disk |
+| Failure handling | Alternative selectors, retries with a wait, then stop or pause |
+| Pause and resume | A stuck run keeps its tab and background commands; you correct the file and press Enter (or send `SIGUSR2`); commands whose values the stuck step needs run again |
+| Checks before running | The whole file is validated first: unknown steps or fields, unset variables, steps without a target tab, unreachable branches |
+| Profile choice | `--profile <nickname>` or `BRAVE_MCP_PROFILE`; the file itself never names a profile |
+| Exit codes | 0 completed, 1 a step failed, 2 invalid input, 3 daemon, extension or profile unavailable, 10 already done (precondition) |
+
+Writing a workflow is best done with an AI agent: with the MCP tools it can open the real
+page, find working selectors and test each step, then write the file. The finished
+workflow runs without the agent.
+
+The full format, the exit codes and the setup of an automation profile are in
+[apps/harness/README.md](apps/harness/README.md).
 
 ## Security Model
 
@@ -332,6 +424,7 @@ The stack is implemented and works as a local development system.
 | Profiles | one daemon for any number of Brave profiles |
 | Daemon transport | localhost HTTP and a WebSocket bridge |
 | Agent transport | local MCP server over `stdio` |
+| Without an agent | command-line workflow player for YAML workflows |
 
 **Not done yet:**
 
@@ -404,6 +497,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 | [apps/extension/README.md](apps/extension/README.md) | Extension package notes |
 | [apps/daemon/README.md](apps/daemon/README.md) | Daemon package notes |
 | [apps/mcp/README.md](apps/mcp/README.md) | MCP server package notes |
-| [apps/harness/README.md](apps/harness/README.md) | Script harness guide |
+| [apps/harness/README.md](apps/harness/README.md) | Workflow player guide |
 | [packages/protocol/README.md](packages/protocol/README.md) | Shared schemas |
 | [packages/sdk/README.md](packages/sdk/README.md) | Test and simulation helpers |
