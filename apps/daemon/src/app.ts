@@ -332,24 +332,55 @@ export async function createDaemonApp(
     pending.resolve(daemonResponseSchema.parse(message));
   }
 
-  function resolveTarget(profile: string | undefined): ProfileEntry | null {
+  function connectedNicknames(): string[] {
+    return [...registry.values()].map((entry) => entry.nickname);
+  }
+
+  function profileError(
+    id: string,
+    code: "BRAVE_PROFILE_REQUIRED" | "BRAVE_PROFILE_NOT_FOUND",
+    message: string,
+  ): DaemonResponse {
+    return {
+      id,
+      ok: false,
+      error: {
+        code,
+        message,
+        retryable: false,
+        details: { connected: connectedNicknames() },
+      },
+    };
+  }
+
+  function resolveTarget(id: string, profile: string | undefined): ProfileEntry | DaemonResponse {
     if (profile !== undefined) {
-      return registry.get(profileKey(profile)) ?? null;
+      return (
+        registry.get(profileKey(profile)) ??
+        profileError(id, "BRAVE_PROFILE_NOT_FOUND", "No connected profile has that nickname; name a connected profile.")
+      );
     }
 
     if (registry.size === 1) {
-      return registry.values().next().value ?? null;
+      const [only] = registry.values();
+      if (only) {
+        return only;
+      }
     }
 
-    return null;
+    if (registry.size === 0) {
+      return offlineResponse(id, "No extension bridge is currently connected.");
+    }
+
+    return profileError(id, "BRAVE_PROFILE_REQUIRED", "Several profiles are connected; name the profile to use.");
   }
 
   async function callExtension(
-    target: ProfileEntry | null,
+    target: ProfileEntry,
     method: DaemonMethod,
     params: Record<string, unknown>,
   ): Promise<DaemonResponse> {
-    if (!target || target.socket.readyState !== target.socket.OPEN) {
+    if (target.socket.readyState !== target.socket.OPEN) {
       return offlineResponse(randomUUID(), "No extension bridge is currently connected.");
     }
 
@@ -480,6 +511,8 @@ export async function createDaemonApp(
       version: "0.0.1",
       startedAt: state.startedAt,
       toolCount: toolCatalog.length,
+      protocolVersion: PROTOCOL_VERSION,
+      profileCount: registry.size,
       extensionConnected: state.extensionConnected,
     };
   });
@@ -491,6 +524,7 @@ export async function createDaemonApp(
       ready: true,
       extensionConnected: state.extensionConnected,
       paired: state.paired,
+      profileCount: registry.size,
       configDir: state.configDir,
     };
   });
@@ -526,15 +560,31 @@ export async function createDaemonApp(
       } satisfies DaemonResponse;
     }
 
-    const target = resolveTarget(parsed.data.profile);
-    const response = await callExtension(target, parsed.data.method, parsed.data.params);
+    if (parsed.data.method === "profiles.list") {
+      return {
+        id: parsed.data.id,
+        ok: true,
+        result: {
+          profiles: [...registry.values()].map((entry) => ({
+            nickname: entry.nickname,
+            connectedAt: entry.connectedAt,
+          })),
+        },
+      } satisfies DaemonResponse;
+    }
+
+    const target = resolveTarget(parsed.data.id, parsed.data.profile);
+    const response =
+      "socket" in target ? await callExtension(target, parsed.data.method, parsed.data.params) : target;
     if (!response.ok) {
       reply.code(
         response.error.code === "BRAVE_TIMEOUT"
           ? 504
           : response.error.code === "BRAVE_AUTH_REQUIRED"
             ? 401
-            : 503,
+            : response.error.code === "BRAVE_PROFILE_REQUIRED" || response.error.code === "BRAVE_PROFILE_NOT_FOUND"
+              ? 409
+              : 503,
       );
     }
 

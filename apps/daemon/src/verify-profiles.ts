@@ -31,14 +31,14 @@ interface RawBridge {
   send(message: unknown): void;
 }
 
-interface TestDaemon {
+export interface TestDaemon {
   baseUrl: string;
   wsUrl: string;
   secret: string;
   logLines: string[];
   rpc(body: Record<string, unknown>): Promise<{ status: number; json: Record<string, unknown> }>;
   raw(options?: { autoPong?: boolean }): Promise<RawBridge>;
-  simulated(profile: string, installationId?: string): Promise<SimulatedExtensionBridge>;
+  simulated(profile: string, installationId?: string, tabIds?: number[]): Promise<SimulatedExtensionBridge>;
   close(): Promise<void>;
 }
 
@@ -52,7 +52,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitUntil(condition: () => boolean | Promise<boolean>, timeoutMs: number, what: string) {
+export async function waitUntil(condition: () => boolean | Promise<boolean>, timeoutMs: number, what: string) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await condition()) {
@@ -78,7 +78,7 @@ function hello(profile: string | undefined, installationId: string | undefined =
   };
 }
 
-async function startTestDaemon(timings: Partial<DaemonTimings> = {}): Promise<TestDaemon> {
+export async function startTestDaemon(timings: Partial<DaemonTimings> = {}): Promise<TestDaemon> {
   const configDir = await mkdtemp(join(tmpdir(), "brave-mcp-daemon-profiles-"));
   const logLines: string[] = [];
   const { app, state } = await createDaemonApp({
@@ -131,13 +131,19 @@ async function startTestDaemon(timings: Partial<DaemonTimings> = {}): Promise<Te
       rawBridges.push(bridge);
       return bridge;
     },
-    async simulated(profile, installationId) {
+    async simulated(profile, installationId, tabIds = [11]) {
       const bridge = await connectSimulatedExtensionBridge({
         daemonUrl: wsUrl,
         authToken: secret,
         profile,
         ...(installationId ? { installationId } : {}),
-        tabs: [{ tabId: 11, windowId: 1, title: profile, url: `https://example.test/${profile}`, active: true }],
+        tabs: tabIds.map((tabId, index) => ({
+          tabId,
+          windowId: 1,
+          title: `${profile} tab ${tabId}`,
+          url: `https://example.test/${encodeURIComponent(profile)}/${tabId}`,
+          active: index === 0,
+        })),
       });
       simulatedBridges.push(bridge);
       return bridge;
@@ -298,7 +304,7 @@ const replaceScenarios: Scenario[] = [
   ],
 ];
 
-function requestIdAt(bridge: RawBridge, index: number): string {
+export function requestIdAt(bridge: RawBridge, index: number): string {
   const message = JSON.parse(bridge.received[index] ?? "{}") as { id?: string };
   check(typeof message.id === "string", `no request at index ${index}`);
   return message.id;
@@ -315,7 +321,7 @@ function respondTabs(bridge: RawBridge, id: string, title: string): void {
 
 const REGISTRATION_PAUSE_MS = 100;
 
-async function registeredRaw(daemon: TestDaemon, nickname: string, installationId = randomUUID()) {
+export async function registeredRaw(daemon: TestDaemon, nickname: string, installationId = randomUUID()) {
   const bridge = await daemon.raw();
   bridge.send(hello(nickname, installationId));
   await delay(REGISTRATION_PAUSE_MS);
@@ -473,6 +479,144 @@ const loggingScenarios: Scenario[] = [
   ],
 ];
 
+async function listProfiles(daemon: TestDaemon): Promise<Array<{ nickname: string; connectedAt: string }>> {
+  const { json } = await daemon.rpc({ method: "profiles.list" });
+  const profiles = (json.result as { profiles?: unknown } | undefined)?.profiles;
+  return Array.isArray(profiles) ? (profiles as Array<{ nickname: string; connectedAt: string }>) : [];
+}
+
+async function waitForProfiles(daemon: TestDaemon, nicknames: string[]): Promise<void> {
+  await waitUntil(
+    async () => {
+      const listed = (await listProfiles(daemon)).map((profile) => profile.nickname).sort();
+      return JSON.stringify(listed) === JSON.stringify([...nicknames].sort());
+    },
+    2_000,
+    `profiles.list to show ${nicknames.join(", ")}`,
+  );
+}
+
+function errorOf(json: Record<string, unknown>) {
+  return json.error as { code?: string; message?: string; details?: { connected?: unknown } } | undefined;
+}
+
+function checkProfileError(
+  result: { status: number; json: Record<string, unknown> },
+  code: string,
+  connected: string[],
+  nicknames: string[],
+): void {
+  const error = errorOf(result.json);
+  check(result.status === 409, `status ${result.status}, expected 409`);
+  check(error?.code === code, `code ${error?.code}, expected ${code}`);
+  const listed = Array.isArray(error.details?.connected) ? [...(error.details.connected as string[])].sort() : null;
+  check(JSON.stringify(listed) === JSON.stringify([...connected].sort()), `details.connected is ${JSON.stringify(listed)}`);
+  for (const nickname of nicknames) {
+    check(!(error.message ?? "").toLowerCase().includes(nickname.toLowerCase()), `message names ${nickname}`);
+  }
+}
+
+async function statusBodies(daemon: TestDaemon): Promise<{ health: Record<string, unknown>; ready: Record<string, unknown> }> {
+  const [health, ready] = await Promise.all([
+    fetch(`${daemon.baseUrl}/healthz`).then((response) => response.json() as Promise<Record<string, unknown>>),
+    fetch(`${daemon.baseUrl}/readyz`).then((response) => response.json() as Promise<Record<string, unknown>>),
+  ]);
+  return { health, ready };
+}
+
+const routingScenarios: Scenario[] = [
+  [
+    "an unnamed request runs with one profile and is offline with none",
+    async (daemon) => {
+      const none = await daemon.rpc({ method: "tabs.list" });
+      check(none.status === 503 && errorOf(none.json)?.code === "BRAVE_EXTENSION_OFFLINE", `none: ${none.status}`);
+      await daemon.simulated("Alpha");
+      await waitForProfiles(daemon, ["Alpha"]);
+      const one = await daemon.rpc({ method: "tabs.list" });
+      check(one.json.ok === true, `one profile: ${JSON.stringify(one.json)}`);
+    },
+  ],
+  [
+    "an unnamed request with several profiles gets BRAVE_PROFILE_REQUIRED 409",
+    async (daemon) => {
+      const alpha = await daemon.simulated("Alpha");
+      const beta = await daemon.simulated("Beta");
+      await waitForProfiles(daemon, ["Alpha", "Beta"]);
+      for (const method of ["tabs.list", "tabs.open", "windows.create"]) {
+        const result = await daemon.rpc({ method, params: { url: "https://example.test/" } });
+        checkProfileError(result, "BRAVE_PROFILE_REQUIRED", ["Alpha", "Beta"], ["Alpha", "Beta"]);
+      }
+      check(alpha.receivedRequestCount + beta.receivedRequestCount === 0, "an unnamed request reached a profile");
+    },
+  ],
+  [
+    "an unknown name gets BRAVE_PROFILE_NOT_FOUND 409 with the connected nicknames",
+    async (daemon) => {
+      await daemon.simulated("Alpha");
+      await waitForProfiles(daemon, ["Alpha"]);
+      const result = await daemon.rpc({ method: "tabs.list", profile: "Gamma" });
+      checkProfileError(result, "BRAVE_PROFILE_NOT_FOUND", ["Alpha"], ["Alpha", "Gamma"]);
+    },
+  ],
+  [
+    "requests naming A never reach B, and a following unnamed request still fails",
+    async (daemon) => {
+      const alpha = await daemon.simulated("Alpha");
+      const beta = await daemon.simulated("Beta");
+      await waitForProfiles(daemon, ["Alpha", "Beta"]);
+      for (const method of ["tabs.list", "tabs.open", "windows.create"]) {
+        const result = await daemon.rpc({ method, profile: "alpha", params: { url: "https://example.test/" } });
+        check(result.json.ok === true, `${method} on Alpha failed: ${JSON.stringify(result.json)}`);
+      }
+      check(alpha.receivedRequestCount === 3, `Alpha got ${alpha.receivedRequestCount}`);
+      check(beta.receivedRequestCount === 0, `Beta got ${beta.receivedRequestCount}`);
+      const unnamed = await daemon.rpc({ method: "tabs.list" });
+      checkProfileError(unnamed, "BRAVE_PROFILE_REQUIRED", ["Alpha", "Beta"], ["Alpha", "Beta"]);
+    },
+  ],
+  [
+    "a tab id that only A has, named with B, fails as BRAVE_TAB_NOT_FOUND",
+    async (daemon) => {
+      await daemon.simulated("Alpha", undefined, [101]);
+      await daemon.simulated("Beta", undefined, [202]);
+      await waitForProfiles(daemon, ["Alpha", "Beta"]);
+      const onAlpha = await daemon.rpc({ method: "tabs.getInfo", profile: "Alpha", params: { tabId: 101 } });
+      check(onAlpha.json.ok === true, `tab 101 on Alpha failed: ${JSON.stringify(onAlpha.json)}`);
+      const onBeta = await daemon.rpc({ method: "tabs.getInfo", profile: "Beta", params: { tabId: 101 } });
+      check(errorOf(onBeta.json)?.code === "BRAVE_TAB_NOT_FOUND", `tab 101 on Beta: ${JSON.stringify(onBeta.json)}`);
+    },
+  ],
+  [
+    "profiles.list needs the secret and keeps the latest spelling of a nickname",
+    async (daemon) => {
+      const installationId = randomUUID();
+      await daemon.simulated("alpha", installationId);
+      await waitForProfiles(daemon, ["alpha"]);
+      await daemon.simulated("Alpha", installationId);
+      await waitForProfiles(daemon, ["Alpha"]);
+      const [profile] = await listProfiles(daemon);
+      check(typeof profile?.connectedAt === "string", "profiles.list has no connectedAt");
+      const denied = await daemon.rpc({ method: "profiles.list", authToken: "wrong-secret" });
+      check(denied.status === 401, `profiles.list without the secret returned ${denied.status}`);
+    },
+  ],
+  [
+    "status bodies carry protocolVersion and profileCount and no nickname",
+    async (daemon) => {
+      await daemon.simulated("Zephyr Status");
+      await daemon.simulated("Beta");
+      await waitForProfiles(daemon, ["Zephyr Status", "Beta"]);
+      const { health, ready } = await statusBodies(daemon);
+      check(health.protocolVersion === PROTOCOL_VERSION, `healthz protocolVersion ${health.protocolVersion}`);
+      check(health.profileCount === 2 && ready.profileCount === 2, "profileCount is not 2");
+      check(health.extensionConnected === true && ready.extensionConnected === true, "extensionConnected is not true");
+      check(ready.paired === true && typeof ready.configDir === "string", "readyz lost paired or configDir");
+      const bodies = JSON.stringify([health, ready]).toLowerCase();
+      check(!bodies.includes("zephyr") && !bodies.includes("beta"), "a status body names a profile");
+    },
+  ],
+];
+
 async function runScenario([name, run]: Scenario): Promise<string | null> {
   const startedAt = Date.now();
   const daemon = await startTestDaemon();
@@ -501,6 +645,7 @@ export async function runProfileScenarios(): Promise<number> {
     ...waitingScenarios,
     ...livenessScenarios,
     ...loggingScenarios,
+    ...routingScenarios,
   ];
   const failures: string[] = [];
   for (const scenario of scenarios) {

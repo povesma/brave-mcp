@@ -4,14 +4,104 @@ import { join } from "node:path";
 
 import { connectSimulatedExtensionBridge } from "@brave-mcp/sdk";
 
+import { z } from "zod";
+
 import { createDaemonApp } from "./app.js";
 import { configFilePath } from "./config.js";
-import { runProfileScenarios } from "./verify-profiles.js";
+import {
+  registeredRaw,
+  requestIdAt,
+  runProfileScenarios,
+  startTestDaemon,
+  waitUntil,
+} from "./verify-profiles.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+// Frozen copies of what 0.0.1 clients read; never import these from the current packages.
+const frozen001 = {
+  harnessReadiness: z.object({
+    extensionConnected: z.boolean(),
+    paired: z.boolean(),
+  }),
+  installerReadiness: z.object({
+    configDir: z.string(),
+  }),
+  response: z.union([
+    z.object({
+      id: z.string().min(1),
+      ok: z.literal(true),
+      result: z.record(z.unknown()),
+    }),
+    z.object({
+      id: z.string().min(1),
+      ok: z.literal(false),
+      error: z.object({
+        code: z.enum([
+          "BRAVE_AUTH_REQUIRED",
+          "BRAVE_EXTENSION_OFFLINE",
+          "BRAVE_TAB_NOT_FOUND",
+          "BRAVE_SELECTOR_NOT_FOUND",
+          "BRAVE_TIMEOUT",
+          "BRAVE_PERMISSION_DENIED",
+          "BRAVE_INTERNAL_ERROR",
+        ]),
+        message: z.string(),
+        retryable: z.boolean(),
+        details: z.record(z.unknown()).optional(),
+      }),
+    }),
+  ]),
+};
+
+async function verifyFrozenContract(): Promise<string[]> {
+  const daemon = await startTestDaemon();
+  const checked: string[] = [];
+  try {
+    const readStatus = async () => {
+      const healthResponse = await fetch(`${daemon.baseUrl}/healthz`);
+      const ready = (await (await fetch(`${daemon.baseUrl}/readyz`)).json()) as unknown;
+      assert(healthResponse.ok, "0.0.1 MCP server needs /healthz to answer 200");
+      assert(frozen001.harnessReadiness.safeParse(ready).success, "0.0.1 harness cannot parse /readyz");
+      assert(frozen001.installerReadiness.safeParse(ready).success, "0.0.1 installer cannot parse /readyz");
+      return ready as { extensionConnected: boolean; paired: boolean };
+    };
+
+    const before = await readStatus();
+    assert(!before.extensionConnected && !before.paired, "/readyz reports a connection before any profile");
+    const none = await daemon.rpc({ method: "tabs.list" });
+    assert(frozen001.response.safeParse(none.json).success, "0.0.1 cannot parse the no-profile offline error");
+    checked.push("status and offline error with no profile");
+
+    const alpha = await registeredRaw(daemon, "Alpha");
+    const after = await readStatus();
+    assert(after.extensionConnected && after.paired, "/readyz does not report the connected profile");
+    const call = daemon.rpc({ method: "tabs.list" });
+    await waitUntil(() => alpha.received.length === 1, 2_000, "the request to Alpha");
+    alpha.send({
+      type: "response",
+      id: requestIdAt(alpha, 0),
+      ok: true,
+      result: { tabs: [] },
+    });
+    const success = await call;
+    assert(frozen001.response.safeParse(success.json).success, "0.0.1 cannot parse a one-profile success");
+    checked.push("status and success with one profile");
+
+    const waiting = daemon.rpc({ method: "tabs.list" });
+    await waitUntil(() => alpha.received.length === 2, 2_000, "the second request to Alpha");
+    alpha.socket.close();
+    const offline = await waiting;
+    assert(frozen001.response.safeParse(offline.json).success, "0.0.1 cannot parse the one-profile offline error");
+    checked.push("offline error when the one profile closes");
+  } finally {
+    await daemon.close();
+  }
+  return checked;
 }
 
 async function main(): Promise<void> {
@@ -792,6 +882,7 @@ async function main(): Promise<void> {
   await app.close();
 
   const verifiedProfileScenarios = await runProfileScenarios();
+  const verifiedFrozenContract = await verifyFrozenContract();
 
   console.log(
     JSON.stringify(
@@ -848,6 +939,7 @@ async function main(): Promise<void> {
         ],
         configDir: state.configDir,
         verifiedProfileScenarios,
+        verifiedFrozenContract,
       },
       null,
       2,
