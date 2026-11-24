@@ -4,12 +4,25 @@ import {
   daemonErrorResponseSchema,
   daemonMethodSchema,
   daemonSuccessResponseSchema,
+  profileNicknameSchema,
 } from "./rpc.js";
 
+export const BRIDGE_CLOSE_CODES = {
+  replaced: 4000,
+  invalidHello: 4400,
+  helloTimeout: 4408,
+  nicknameInUse: 4409,
+  extensionTooOld: 4426,
+} as const;
+
+// Profile fields stay optional so a 0.0.1 hello parses and can be refused with a reason.
 export const bridgeHelloMessageSchema = z.object({
   type: z.literal("hello"),
   browser: z.enum(["brave", "chromium"]),
   version: z.string().min(1),
+  profile: profileNicknameSchema.optional(),
+  installationId: z.string().uuid().optional(),
+  protocolVersion: z.number().int().positive().optional(),
 });
 
 export const bridgePingMessageSchema = z.object({

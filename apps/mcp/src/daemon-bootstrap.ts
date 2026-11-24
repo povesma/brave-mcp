@@ -229,6 +229,8 @@ export async function shutdownAutoStartedDaemon(): Promise<void> {
     });
   });
 
+  // The child was unref'd at start; without ref() Node can exit before "exit" fires.
+  daemonProcess.ref();
   daemonProcess.kill();
   await exited;
 }

@@ -1,5 +1,24 @@
 import { z } from "zod";
 
+export const PROTOCOL_VERSION = 2;
+
+export const PROFILE_NICKNAME_MAX_LENGTH = 32;
+
+export const PROFILE_NICKNAME_RULE =
+  `1-${PROFILE_NICKNAME_MAX_LENGTH} characters: letters A-Z, digits, space, "-", "_" or ".", ` +
+  "starting with a letter or digit";
+
+export const profileNicknameSchema = z
+  .string()
+  .trim()
+  .min(1, PROFILE_NICKNAME_RULE)
+  .max(PROFILE_NICKNAME_MAX_LENGTH, PROFILE_NICKNAME_RULE)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, PROFILE_NICKNAME_RULE);
+
+export function profileKey(nickname: string): string {
+  return nickname.toLowerCase();
+}
+
 export const daemonMethodSchema = z.enum([
   "tabs.list",
   "windows.list",
@@ -49,6 +68,7 @@ export const daemonMethodSchema = z.enum([
   "page.exportHar",
   "page.waitForIdle",
   "page.executeJavaScript",
+  "profiles.list",
 ]);
 
 export const daemonRequestSchema = z.object({
@@ -56,6 +76,7 @@ export const daemonRequestSchema = z.object({
   method: daemonMethodSchema,
   params: z.record(z.unknown()).default({}),
   authToken: z.string().min(1),
+  profile: profileNicknameSchema.optional(),
 });
 
 export const daemonSuccessResponseSchema = z.object({
@@ -72,6 +93,8 @@ export const daemonErrorCodeSchema = z.enum([
   "BRAVE_TIMEOUT",
   "BRAVE_PERMISSION_DENIED",
   "BRAVE_INTERNAL_ERROR",
+  "BRAVE_PROFILE_REQUIRED",
+  "BRAVE_PROFILE_NOT_FOUND",
 ]);
 
 export const daemonErrorResponseSchema = z.object({

@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
+
 import WebSocket, { type RawData } from "ws";
 
 import {
+  PROTOCOL_VERSION,
   backOutputSchema,
   bridgeRequestMessageSchema,
   capturePdfOutputSchema,
@@ -55,11 +58,17 @@ export interface SimulatedExtensionBridgeOptions {
   daemonUrl: string;
   authToken: string;
   tabs?: Tab[];
+  profile?: string;
+  installationId?: string;
 }
 
 export interface SimulatedExtensionBridge {
   close(): Promise<void>;
+  stopAnsweringPings(): void;
+  readonly receivedRequestCount: number;
 }
+
+export const DEFAULT_SIMULATED_PROFILE = "Simulated";
 
 const defaultTabs: Tab[] = [
   {
@@ -91,16 +100,27 @@ export async function connectSimulatedExtensionBridge(
     ]),
   );
   let nextTabId = Math.max(0, ...tabs.map((tab) => tab.tabId)) + 1;
-  const socket = new WebSocket(withAuth(options.daemonUrl, options.authToken));
+  let answeringPings = true;
+  let receivedRequestCount = 0;
+  const socket = new WebSocket(withAuth(options.daemonUrl, options.authToken), { autoPong: false });
+
+  socket.on("ping", (data) => {
+    if (answeringPings) {
+      socket.pong(data);
+    }
+  });
 
   await new Promise<void>((resolve, reject) => {
     socket.once("open", () => {
       socket.send(
         JSON.stringify({
-              type: "hello",
-              browser: "brave",
-              version: "0.0.1",
-            }),
+          type: "hello",
+          browser: "brave",
+          version: "0.0.1",
+          profile: options.profile ?? DEFAULT_SIMULATED_PROFILE,
+          installationId: options.installationId ?? randomUUID(),
+          protocolVersion: PROTOCOL_VERSION,
+        }),
       );
       resolve();
     });
@@ -109,7 +129,25 @@ export async function connectSimulatedExtensionBridge(
 
   socket.on("message", (raw: RawData) => {
     const message = bridgeRequestMessageSchema.parse(JSON.parse(raw.toString()));
+    receivedRequestCount += 1;
     let response: BridgeResponseMessage;
+
+    const requestedTabId = message.params.tabId;
+    if (requestedTabId !== undefined && !tabs.some((tab) => tab.tabId === Number(requestedTabId))) {
+      response = {
+        type: "response",
+        id: message.id,
+        ok: false,
+        error: {
+          code: "BRAVE_TAB_NOT_FOUND",
+          message: `No tab with id: ${String(requestedTabId)}`,
+          retryable: false,
+        },
+      };
+      socket.send(JSON.stringify(response));
+      return;
+    }
+
     switch (message.method) {
       case "tabs.list":
         response = {
@@ -1023,6 +1061,12 @@ export async function connectSimulatedExtensionBridge(
         socket.once("close", () => resolve());
         socket.close();
       });
+    },
+    stopAnsweringPings() {
+      answeringPings = false;
+    },
+    get receivedRequestCount() {
+      return receivedRequestCount;
     },
   };
 }
