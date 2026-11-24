@@ -95,10 +95,13 @@ import {
   typeTextOutputSchema,
   captureScreenshotInputSchema,
   captureScreenshotOutputSchema,
+  profileKey,
+  profileNicknameSchema,
 } from "@brave-mcp/protocol";
+import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-import type { DaemonClient } from "./daemon-client.js";
+import { DaemonCallError, type DaemonClient } from "./daemon-client.js";
 
 export const implementedTools = [
   {
@@ -585,12 +588,82 @@ export const implementedTools = [
 
 export type ImplementedToolName = (typeof implementedTools)[number]["name"];
 
+const LIST_PROFILES_TOOL = {
+  name: "list_profiles",
+  description:
+    "List the nicknames of the Brave profiles connected to the local daemon. Name one in the profile input of any browser tool.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+} as const;
+
+const PROFILE_INPUT_SCHEMA = {
+  type: "string",
+  description:
+    "Nickname of the Brave profile to act in (see list_profiles). Optional when only one profile is connected or this server has a default profile.",
+};
+
+const PROFILE_ERROR_CODES = new Set(["BRAVE_PROFILE_REQUIRED", "BRAVE_PROFILE_NOT_FOUND"]);
+
+const profilesListResultSchema = z.object({
+  profiles: z.array(z.object({ nickname: z.string(), connectedAt: z.string() })),
+});
+
 export function getToolDefinitions() {
-  return implementedTools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: zodToJsonSchema(tool.inputSchema, { $refStrategy: "none", target: "jsonSchema7" }),
-  }));
+  const browserTools = implementedTools.map((tool) => {
+    const schema = zodToJsonSchema(tool.inputSchema, { $refStrategy: "none", target: "jsonSchema7" }) as {
+      properties?: Record<string, unknown>;
+    };
+    return {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: { ...schema, properties: { ...schema.properties, profile: PROFILE_INPUT_SCHEMA } },
+    };
+  });
+  return [...browserTools, LIST_PROFILES_TOOL];
+}
+
+function isSameProfile(a: string, b: string): boolean {
+  return profileKey(a) === profileKey(b);
+}
+
+function takeProfile(input: unknown): { requested?: string; rest: unknown } {
+  if (input === null || typeof input !== "object" || !("profile" in input)) {
+    return { rest: input ?? {} };
+  }
+  const { profile, ...rest } = input as Record<string, unknown>;
+  if (profile === undefined) {
+    return { rest };
+  }
+  const parsed = profileNicknameSchema.safeParse(profile);
+  if (!parsed.success) {
+    throw new Error(`Invalid profile: ${parsed.error.issues[0]?.message ?? "not a profile nickname"}`);
+  }
+  return { requested: parsed.data, rest };
+}
+
+function formatToolError(error: unknown, target: string | undefined, targetFromConfig: boolean): Error {
+  if (!(error instanceof DaemonCallError)) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  if (error.code === "BRAVE_PROFILE_NOT_FOUND" && targetFromConfig && target !== undefined) {
+    return new Error(
+      `Profile ${target} is offline. Open Brave in that profile and check that the brave-mcp extension is connected.`,
+    );
+  }
+  const connected = error.details?.connected;
+  if (PROFILE_ERROR_CODES.has(error.code) && Array.isArray(connected)) {
+    const list = connected.length > 0 ? connected.join(", ") : "none";
+    return new Error(`${error.code}: ${error.message} Connected profiles: ${list}.`);
+  }
+  return new Error(`${error.code}: ${error.message}`);
+}
+
+async function listProfiles(client: DaemonClient) {
+  const result = profilesListResultSchema.parse(await client.withProfile(undefined).call("profiles.list"));
+  const locked = client.defaultProfile;
+  if (!client.profileLocked || locked === undefined) {
+    return result;
+  }
+  return { profiles: result.profiles.filter((entry) => isSameProfile(entry.nickname, locked)) };
 }
 
 export async function handleToolCall(
@@ -598,10 +671,30 @@ export async function handleToolCall(
   name: string,
   input: unknown,
 ) {
+  if (name === LIST_PROFILES_TOOL.name) {
+    try {
+      return await listProfiles(client);
+    } catch (error) {
+      throw formatToolError(error, undefined, false);
+    }
+  }
+
   const tool = implementedTools.find((candidate) => candidate.name === name);
   if (!tool) {
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  return tool.call(client, input);
+  const { requested, rest } = takeProfile(input);
+  const fallback = client.defaultProfile;
+  if (client.profileLocked && fallback !== undefined && requested !== undefined && !isSameProfile(requested, fallback)) {
+    throw new Error(`This brave-mcp server is locked to profile ${fallback}; it cannot act in other profiles.`);
+  }
+  const target = client.profileLocked ? fallback : requested ?? fallback;
+  const targetFromConfig = target !== undefined && (client.profileLocked || requested === undefined);
+
+  try {
+    return await tool.call(client.withProfile(target), rest);
+  } catch (error) {
+    throw formatToolError(error, target, targetFromConfig);
+  }
 }

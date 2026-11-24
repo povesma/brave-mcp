@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +58,7 @@ import { resolveRuntimeConfig } from "./config.js";
 import { DaemonClient } from "./daemon-client.js";
 import { shutdownAutoStartedDaemon } from "./daemon-bootstrap.js";
 import { getToolDefinitions, handleToolCall, implementedTools } from "./tools.js";
+import { getFreePort, runProfileScenarios, waitForHealth } from "./verify-profiles.js";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -70,47 +70,6 @@ function assert(condition: unknown, message: string): asserts condition {
 for (const tool of getToolDefinitions()) {
   const schema = tool.inputSchema as { type?: unknown };
   assert(schema.type === "object", `Tool ${tool.name} input schema must have top-level "type": "object"`);
-}
-
-async function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address !== "object") {
-        reject(new Error("Expected a bound server address"));
-        return;
-      }
-
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(port);
-      });
-    });
-  });
-}
-
-async function waitForHealth(baseUrl: string): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      const response = await fetch(`${baseUrl}/healthz`);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // Retry while the daemon is still starting.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  throw new Error("Timed out waiting for the daemon health endpoint");
 }
 
 async function verifyDaemonAutostart(): Promise<void> {
@@ -151,6 +110,7 @@ async function verifyDaemonAutostart(): Promise<void> {
 
 async function main(): Promise<void> {
   await verifyDaemonAutostart();
+  const profileScenarioCount = await runProfileScenarios();
 
   const tempConfigDir = await mkdtemp(join(tmpdir(), "brave-mcp-mcp-"));
   const port = await getFreePort();
@@ -692,6 +652,7 @@ async function main(): Promise<void> {
     console.log(
       JSON.stringify(
         {
+          profileScenarios: profileScenarioCount,
           verifiedTools: implementedTools.map((tool) => tool.name),
           activeTabTitle: activeTab.tab.title,
           openedTabId: (openedTab as { tabId: number }).tabId,

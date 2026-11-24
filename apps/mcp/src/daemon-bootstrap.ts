@@ -4,14 +4,20 @@ import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { PROTOCOL_VERSION } from "@brave-mcp/protocol";
 import { z } from "zod";
 
 const daemonConfigSchema = z.object({
   secret: z.string().min(1),
 });
 
+const healthBodySchema = z.object({
+  protocolVersion: z.number().int().optional(),
+});
+
 const HEALTH_TIMEOUT_MS = 15_000;
 const HEALTH_POLL_INTERVAL_MS = 250;
+const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 
 let autoStartedDaemon: ChildProcess | null = null;
 let autoStartedDaemonKey: string | null = null;
@@ -126,7 +132,26 @@ async function resolveDaemonEntryPath(): Promise<string> {
   return daemonEntryPath;
 }
 
+async function assertDaemonProtocol(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(HEALTH_REQUEST_TIMEOUT_MS) });
+  const body = healthBodySchema.safeParse(await response.json().catch(() => null));
+  const version = body.success ? body.data.protocolVersion : undefined;
+  if (version === undefined || version < PROTOCOL_VERSION) {
+    throw new Error(
+      `The brave-mcp daemon at ${baseUrl} is too old (protocol ${version ?? 1}, this server needs ${PROTOCOL_VERSION}). ` +
+        "An older daemon is still running: stop that process, and this server starts the current daemon when it next starts.",
+    );
+  }
+}
+
 export async function ensureDaemonAvailable(
+  options: EnsureDaemonOptions,
+): Promise<void> {
+  await ensureDaemonRunning(options);
+  await assertDaemonProtocol(parseDaemonUrl(options.daemonUrl).baseUrl);
+}
+
+async function ensureDaemonRunning(
   options: EnsureDaemonOptions,
 ): Promise<void> {
   const parsed = parseDaemonUrl(options.daemonUrl);
