@@ -83,6 +83,13 @@
         color: #4b5b61;
       }
 
+      .hint {
+        margin: 0;
+        font-weight: 400;
+        font-size: 14px;
+        color: #4b5b61;
+      }
+
       pre {
         margin: 0;
         padding: 18px;
@@ -99,6 +106,15 @@
       <h1>Brave MCP</h1>
       <p>Configure the local daemon connection for the Brave background worker.</p>
       <form id="settings-form">
+        <label>
+          Profile Nickname
+          <input id="profile-nickname" type="text" required maxlength="32" placeholder="For example: Work" />
+          <span id="profile-nickname-rule" class="hint"></span>
+          <span class="hint">
+            Agents name this profile by its nickname, so the nickname is visible to every agent that uses
+            brave-mcp and to that agent's AI provider. Do not use private information.
+          </span>
+        </label>
         <label>
           Daemon WebSocket URL
           <input id="daemon-url" type="url" placeholder="ws://127.0.0.1:39200/extension/connect" />

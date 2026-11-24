@@ -1,11 +1,23 @@
 import {
   bridgeRequestMessageSchema,
+  PROTOCOL_VERSION,
   type BridgeRequestMessage,
   type BridgeResponseMessage,
   tabSchema,
   tabInfoSchema,
   windowInfoSchema,
 } from "@brave-mcp/protocol";
+
+import {
+  clearRefusal,
+  clearsRefusal,
+  createInstallationIdStore,
+  isRefusal,
+  readRefusal,
+  shouldConnect,
+  shouldKeepAlarm,
+  writeRefusal,
+} from "./bridge-identity.js";
 
 const DEFAULT_DAEMON_URL = "ws://127.0.0.1:39200/extension/connect";
 const EXTENSION_VERSION = "0.0.1";
@@ -22,11 +34,13 @@ type BridgeState = "disconnected" | "connecting" | "connected";
 interface ExtensionSettings {
   daemonUrl: string;
   authToken: string;
+  profileNickname: string;
 }
 
 interface BridgeStatus {
   state: BridgeState;
   daemonUrl: string;
+  profileNickname: string;
   authConfigured: boolean;
   lastAttemptAt: string | null;
   lastConnectedAt: string | null;
@@ -138,14 +152,21 @@ function getStorage(): chrome.storage.StorageArea {
 }
 
 async function loadSettings(): Promise<ExtensionSettings> {
-  const result = await getStorage().get(["daemonUrl", "authToken"]);
+  const result = await getStorage().get(["daemonUrl", "authToken", "profileNickname"]);
   return {
     daemonUrl:
       typeof result.daemonUrl === "string" && result.daemonUrl.length > 0
         ? result.daemonUrl
         : DEFAULT_DAEMON_URL,
     authToken: typeof result.authToken === "string" ? result.authToken : "",
+    profileNickname: typeof result.profileNickname === "string" ? result.profileNickname : "",
   };
+}
+
+const installationIds = createInstallationIdStore(getStorage());
+
+async function connectionInputs(settings: ExtensionSettings) {
+  return { ...settings, refusal: await readRefusal(getStorage()) };
 }
 
 function nowIso(): string {
@@ -194,6 +215,7 @@ async function persistBridgeStatus(
   const status: BridgeStatus = {
     state: bridgeState,
     daemonUrl: resolvedSettings.daemonUrl,
+    profileNickname: resolvedSettings.profileNickname,
     authConfigured: resolvedSettings.authToken.length > 0,
     lastAttemptAt,
     lastConnectedAt,
@@ -4270,7 +4292,7 @@ async function markDisconnected(
   lastError = reason;
   await persistBridgeStatus(settings);
 
-  if (settings.authToken) {
+  if (shouldKeepAlarm(await connectionInputs(settings))) {
     await ensureReconnectAlarm();
   } else {
     await clearReconnectAlarm();
@@ -4279,10 +4301,11 @@ async function markDisconnected(
 
 async function connectBridge(forceReconnect = false): Promise<void> {
   const settings = await loadSettings();
-  if (!settings.authToken) {
+  const decision = shouldConnect(await connectionInputs(settings));
+  if (!decision.connect) {
     socket?.close();
     socket = null;
-    await markDisconnected(settings, "Auth token is not configured.");
+    await markDisconnected(settings, decision.reason);
     return;
   }
 
@@ -4300,6 +4323,7 @@ async function connectBridge(forceReconnect = false): Promise<void> {
   lastAttemptAt = nowIso();
   lastError = null;
   await persistBridgeStatus(settings);
+  const installationId = await installationIds.ensureInstallationId();
   const nextSocket = new WebSocket(withAuth(settings.daemonUrl, settings.authToken));
   socket = nextSocket;
 
@@ -4316,6 +4340,9 @@ async function connectBridge(forceReconnect = false): Promise<void> {
       type: "hello",
       browser: "brave",
       version: EXTENSION_VERSION,
+      profile: decision.nickname,
+      installationId,
+      protocolVersion: PROTOCOL_VERSION,
     });
     startHeartbeat(nextSocket);
     void clearReconnectAlarm();
@@ -4334,13 +4361,31 @@ async function connectBridge(forceReconnect = false): Promise<void> {
     })();
   });
 
-  nextSocket.addEventListener("close", () => {
+  nextSocket.addEventListener("close", (event) => {
     if (!isLiveSocket(nextSocket)) {
       return;
     }
 
     socket = null;
-    void markDisconnected(settings, lastError ?? "Connection closed.");
+    void (async () => {
+      const closeReason = event.reason || `closed with code ${event.code}`;
+      if (isRefusal(event.code)) {
+        await writeRefusal(getStorage(), {
+          code: event.code,
+          reason: closeReason,
+          nickname: decision.nickname,
+          daemonUrl: settings.daemonUrl,
+        });
+        await markDisconnected(
+          settings,
+          `The daemon refused this profile: ${closeReason}. Change the settings or press Reconnect Now.`,
+        );
+        return;
+      }
+
+      const reason = event.code >= 4000 ? `Connection closed by the daemon: ${closeReason}.` : null;
+      await markDisconnected(settings, reason ?? lastError ?? "Connection closed.");
+    })();
   });
 
   nextSocket.addEventListener("error", () => {
@@ -4452,8 +4497,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if ("daemonUrl" in changes || "authToken" in changes) {
-    void connectBridge(true);
+  if (clearsRefusal({ kind: "settings", changedKeys: Object.keys(changes) })) {
+    void (async () => {
+      await clearRefusal(getStorage());
+      await connectBridge(true);
+    })();
   }
 });
 
@@ -4471,6 +4519,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "reconnect-bridge") {
     void (async () => {
+      if (clearsRefusal({ kind: "reconnect" })) {
+        await clearRefusal(getStorage());
+      }
       await connectBridge(true);
       sendResponse(await persistBridgeStatus());
     })();

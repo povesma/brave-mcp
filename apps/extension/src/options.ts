@@ -1,11 +1,17 @@
+import { PROFILE_NICKNAME_RULE } from "@brave-mcp/protocol";
+
+import { checkNickname, parseLaunchParameters } from "./bridge-identity.js";
+
 interface ExtensionSettings {
   daemonUrl: string;
   authToken: string;
+  profileNickname: string;
 }
 
 interface BridgeStatus {
   state: "disconnected" | "connecting" | "connected";
   daemonUrl: string;
+  profileNickname?: string;
   authConfigured: boolean;
   lastAttemptAt: string | null;
   lastConnectedAt: string | null;
@@ -14,42 +20,24 @@ interface BridgeStatus {
 
 const DEFAULT_DAEMON_URL = "ws://127.0.0.1:39200/extension/connect";
 
-interface QueryOverrides {
-  daemonUrl?: string;
-  authToken?: string;
-  autosave: boolean;
-}
-
 function getStorage(): chrome.storage.StorageArea {
   return chrome.storage.local;
 }
 
 async function loadSettings(): Promise<ExtensionSettings> {
-  const result = await getStorage().get(["daemonUrl", "authToken"]);
+  const result = await getStorage().get(["daemonUrl", "authToken", "profileNickname"]);
   return {
     daemonUrl:
       typeof result.daemonUrl === "string" && result.daemonUrl.length > 0
         ? result.daemonUrl
         : DEFAULT_DAEMON_URL,
     authToken: typeof result.authToken === "string" ? result.authToken : "",
+    profileNickname: typeof result.profileNickname === "string" ? result.profileNickname : "",
   };
 }
 
 async function saveSettings(settings: ExtensionSettings): Promise<void> {
   await getStorage().set(settings);
-}
-
-function readQueryOverrides(): QueryOverrides {
-  const params = new URLSearchParams(window.location.search);
-  const daemonUrl = params.get("daemonUrl")?.trim() || undefined;
-  const authToken = params.get("authToken")?.trim() || undefined;
-  const autosaveValue = params.get("autosave")?.trim().toLowerCase();
-
-  return {
-    daemonUrl,
-    authToken,
-    autosave: autosaveValue === "1" || autosaveValue === "true",
-  };
 }
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -79,6 +67,7 @@ function renderBridgeStatus(status: BridgeStatus): string {
 
   const lines = [
     `State: ${stateLabel}`,
+    `Profile nickname: ${status.profileNickname || "Not set"}`,
     `Daemon URL: ${status.daemonUrl}`,
     `Auth token configured: ${status.authConfigured ? "Yes" : "No"}`,
     `Last attempt: ${formatTimestamp(status.lastAttemptAt)}`,
@@ -104,58 +93,74 @@ async function requestReconnect(): Promise<BridgeStatus> {
   }) as Promise<BridgeStatus>;
 }
 
+type SaveResult = { saved: true; status: BridgeStatus } | { saved: false; reason: string };
+
 async function persistAndReconnect(
   daemonUrl: string,
   authToken: string,
-): Promise<BridgeStatus> {
+  profileNickname: string,
+): Promise<SaveResult> {
+  const nickname = checkNickname(profileNickname);
+  if (!nickname.ok) {
+    return { saved: false, reason: `Profile nickname not saved. Use ${nickname.reason}.` };
+  }
+
   await saveSettings({
     daemonUrl: daemonUrl.trim() || DEFAULT_DAEMON_URL,
     authToken: authToken.trim(),
+    profileNickname: nickname.nickname,
   });
 
-  return requestReconnect();
+  return { saved: true, status: await requestReconnect() };
 }
 
 async function main(): Promise<void> {
   const form = byId<HTMLFormElement>("settings-form");
   const daemonUrlInput = byId<HTMLInputElement>("daemon-url");
   const authTokenInput = byId<HTMLInputElement>("auth-token");
+  const nicknameInput = byId<HTMLInputElement>("profile-nickname");
+  const nicknameRule = byId<HTMLElement>("profile-nickname-rule");
   const status = byId<HTMLParagraphElement>("status");
   const bridgeStatus = byId<HTMLPreElement>("bridge-status");
   const reconnectButton = byId<HTMLButtonElement>("reconnect-button");
 
+  nicknameRule.textContent = `Use ${PROFILE_NICKNAME_RULE}.`;
+
   const settings = await loadSettings();
-  const queryOverrides = readQueryOverrides();
+  const launch = parseLaunchParameters(window.location.search);
 
-  daemonUrlInput.value = queryOverrides.daemonUrl ?? settings.daemonUrl;
-  authTokenInput.value = queryOverrides.authToken ?? settings.authToken;
+  daemonUrlInput.value = launch.daemonUrl ?? settings.daemonUrl;
+  authTokenInput.value = launch.authToken ?? settings.authToken;
+  nicknameInput.value = launch.profileNickname ?? settings.profileNickname;
 
-  let latestStatus: BridgeStatus;
+  const showSaveResult = (result: SaveResult, savedText: string) => {
+    if (result.saved) {
+      bridgeStatus.textContent = renderBridgeStatus(result.status);
+      status.textContent = savedText;
+    } else {
+      status.textContent = result.reason;
+    }
+  };
+
   if (
-    queryOverrides.autosave &&
-    (queryOverrides.daemonUrl !== undefined ||
-      queryOverrides.authToken !== undefined)
+    launch.autosave &&
+    (launch.daemonUrl !== undefined || launch.authToken !== undefined || launch.profileNickname !== undefined)
   ) {
-    latestStatus = await persistAndReconnect(
-      daemonUrlInput.value,
-      authTokenInput.value,
+    showSaveResult(
+      await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value),
+      "Saved from launch parameters and reconnect requested.",
     );
-    status.textContent = "Saved from launch parameters and reconnect requested.";
-  } else {
-    latestStatus = await requestBridgeStatus();
   }
 
-  bridgeStatus.textContent = renderBridgeStatus(latestStatus);
+  bridgeStatus.textContent = renderBridgeStatus(await requestBridgeStatus());
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     void (async () => {
-      const latestStatus = await persistAndReconnect(
-        daemonUrlInput.value,
-        authTokenInput.value,
+      showSaveResult(
+        await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value),
+        "Saved and reconnect requested.",
       );
-      bridgeStatus.textContent = renderBridgeStatus(latestStatus);
-      status.textContent = "Saved and reconnect requested.";
     })();
   });
 

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "npm run build -w @brave-mcp/protocol && node build.mjs",
-    "verify": "npm run build"
+    "test": "node build.mjs --tests && node --test \"dist-test/*.test.mjs\"",
+    "verify": "npm run build && npm run test"
   },
   "dependencies": {
     "@brave-mcp/protocol": "file:../../packages/protocol"
