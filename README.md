@@ -70,6 +70,21 @@ One tool call travels like this:
 The parts are separate on purpose: the tool list the agent sees stays stable, while all
 browser-specific code stays in the extension and the daemon.
 
+### Several Brave Profiles
+
+One daemon serves every Brave profile that has the extension installed. Each profile has
+a nickname, set on the extension's options page.
+
+- With one profile connected, every action runs there.
+- With several connected, the agent names the profile with the `profile` input that every
+  browser tool accepts; `list_profiles` shows the connected nicknames. An action without a
+  name then fails and lists them; nothing is remembered between actions.
+- A tab or window number is looked up only in the named profile.
+- An agent registration can set a default profile, and lock itself to it, with
+  `BRAVE_MCP_PROFILE` and `BRAVE_MCP_PROFILE_LOCK` (see [apps/mcp/README.md](apps/mcp/README.md)).
+- A workflow run chooses its profile with `--profile` or `BRAVE_MCP_PROFILE` (see
+  [apps/harness/README.md](apps/harness/README.md)).
+
 <details>
 <summary>Example request and result</summary>
 
@@ -173,7 +188,13 @@ The daemon writes its pairing secret to `/tmp/brave-mcp-smoke/daemon-config.json
 4. Open the extension's options page and set:
    - daemon URL: `ws://127.0.0.1:39200/extension/connect`
    - auth token: the `secret` value from `daemon-config.json`
+   - profile nickname: a short name for this Brave profile, such as `Work`
+     (1-32 letters, digits, spaces, `-`, `_` or `.`, starting with a letter
+     or digit). Agents and their AI provider see it, so it should not reveal
+     anything private. The extension does not connect without it.
 5. If it does not connect, click `Reconnect Now`.
+6. To use more Brave profiles, repeat these steps in each one, with a
+   different nickname per profile.
 
 **5. Register the MCP server with your agent**
 
@@ -216,12 +237,14 @@ Everything is ready when the answer looks like this:
   "ok": true,
   "ready": true,
   "extensionConnected": true,
-  "paired": true
+  "paired": true,
+  "profileCount": 1
 }
 ```
 
-If `extensionConnected` or `paired` is `false`, check the daemon URL and the auth token
-on the extension's options page.
+`profileCount` is the number of connected profiles. If it is `0`, check the daemon URL,
+the auth token and the profile nickname on the extension's options page; a refused
+nickname shows its reason there.
 
 The daemon's local endpoints are `GET /healthz`, `GET /readyz` and `POST /rpc`.
 
@@ -247,7 +270,8 @@ The project has also been run against a real Brave browser during development.
 
 ## Tools
 
-Version `0.0.1` offers 48 tools.
+The MCP server offers 48 browser tools, plus `list_profiles`. Every browser tool also
+accepts an optional `profile` input (see [Several Brave Profiles](#several-brave-profiles)).
 
 | Group | Tools |
 |---|---|
@@ -285,6 +309,8 @@ The project is local and explicit about who may do what:
 - The MCP server never talks to the browser directly; it talks to the daemon.
 - Every tool that changes the browser is a named tool with typed inputs.
 - The daemon can report its health and pairing state without revealing browser content.
+  Without the pairing secret it shows only how many profiles are connected, never their
+  nicknames.
 
 The browser is visible to you and the control channel stays on your machine.
 
@@ -302,7 +328,8 @@ The stack is implemented and works as a local development system.
 | | |
 |---|---|
 | Version | `0.0.1` |
-| Tools | 48 |
+| Tools | 48 browser tools plus `list_profiles` |
+| Profiles | one daemon for any number of Brave profiles |
 | Daemon transport | localhost HTTP and a WebSocket bridge |
 | Agent transport | local MCP server over `stdio` |
 

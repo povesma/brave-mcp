@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
+
 import {
   BRIDGE_CLOSE_CODES,
   bridgeClientMessageSchema,
   bridgeHelloMessageSchema,
   bridgeRequestMessageSchema,
+  daemonErrorCodeSchema,
   daemonMethodSchema,
   daemonRequestSchema,
   daemonResponseSchema,
@@ -238,6 +241,68 @@ assert(
   `Profile checks failed (${failedProfileChecks.length} of ${profileChecks.length}):\n- ${failedProfileChecks.join("\n- ")}`,
 );
 
+interface JsonSchemaObject {
+  properties?: Record<string, { type?: unknown; enum?: unknown[] } & JsonSchemaObject>;
+  required?: string[];
+  definitions?: Record<string, JsonSchemaObject>;
+  anyOf?: JsonSchemaObject[];
+}
+
+function readSpec(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(new URL(`../../../specs/${path}`, import.meta.url), "utf8")) as Record<
+    string,
+    unknown
+  >;
+}
+
+function sameMembers(listed: unknown, expected: readonly string[]): boolean {
+  return (
+    Array.isArray(listed) &&
+    listed.length === expected.length &&
+    [...listed].sort().join("\n") === [...expected].sort().join("\n")
+  );
+}
+
+function isOptionalString(schema: JsonSchemaObject | undefined, name: string): boolean {
+  return schema?.properties?.[name]?.type === "string" && !(schema.required ?? []).includes(name);
+}
+
+const rpcSpec = readSpec("rpc/daemon-rpc.schema.json") as { properties: Record<string, JsonSchemaObject> };
+const specRequest = rpcSpec.properties.request?.definitions?.DaemonRequest;
+const specErrorBranch = rpcSpec.properties.response?.definitions?.DaemonResponse?.anyOf?.find(
+  (branch) => branch.properties?.error !== undefined,
+);
+const toolsSpec = readSpec("tools/brave-tools.schema.json") as {
+  $defs?: Record<string, JsonSchemaObject>;
+  tools?: Array<{ name: string }>;
+};
+
+const specChecks: Array<[string, () => boolean]> = [
+  [
+    "RPC spec methods equal the protocol methods",
+    () => sameMembers(specRequest?.properties?.method?.enum, daemonMethodSchema.options),
+  ],
+  [
+    "RPC spec error codes equal the protocol error codes",
+    () => sameMembers(specErrorBranch?.properties?.error?.properties?.code?.enum, daemonErrorCodeSchema.options),
+  ],
+  ["RPC spec request has an optional profile", () => isOptionalString(specRequest, "profile")],
+  [
+    "tools spec lists exactly the catalog tools",
+    () => sameMembers(toolsSpec.tools?.map((tool) => tool.name), toolCatalog.map((tool) => tool.name)),
+  ],
+  [
+    "tools spec declares the common optional profile input",
+    () => isOptionalString(toolsSpec.$defs?.commonInput, "profile"),
+  ],
+];
+
+const failedSpecChecks = specChecks.filter(([, check]) => !check()).map(([name]) => name);
+assert(
+  failedSpecChecks.length === 0,
+  `Spec checks failed (${failedSpecChecks.length} of ${specChecks.length}):\n- ${failedSpecChecks.join("\n- ")}`,
+);
+
 console.log(
   JSON.stringify(
     {
@@ -245,6 +310,7 @@ console.log(
       verifiedRpcMethods: requestResult.data.method,
       verifiedBridgeMessages: ["hello", "ping", "request"],
       verifiedProfileChecks: profileChecks.length,
+      verifiedSpecChecks: specChecks.length,
     },
     null,
     2,

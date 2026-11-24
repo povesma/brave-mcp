@@ -48,8 +48,11 @@ The pairing secret is written to:
 6. Set:
    - daemon URL: `ws://127.0.0.1:39200/extension/connect`
    - auth token: the `secret` from `daemon-config.json`
+   - profile nickname: a short name for this profile, such as `Work`; required,
+     and different in each profile that has the extension
 
-If needed, click `Reconnect Now`.
+If needed, click `Reconnect Now`. Repeat this step in every Brave profile the agent
+should use.
 
 ## 4. Verify Bridge Health
 
@@ -64,7 +67,8 @@ Expected shape:
   "ok": true,
   "ready": true,
   "extensionConnected": true,
-  "paired": true
+  "paired": true,
+  "profileCount": 1
 }
 ```
 

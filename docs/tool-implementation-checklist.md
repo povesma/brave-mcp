@@ -115,6 +115,12 @@ Reference mapping:
 
 These are not taken directly from Kapture but are pragmatic additions for Codex-driven workflows.
 
+## Profiles
+
+- `[x]` `list_profiles` — an MCP-only tool backed by the daemon method `profiles.list`; it
+  is not in the protocol tool catalog and has no extension part
+- `[x]` optional `profile` input on every browser tool, sent in the daemon request
+
 ## Implementation Rule For Each Tool
 
 Every tool is only marked implemented when all four layers exist:

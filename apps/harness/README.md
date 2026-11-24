@@ -25,13 +25,13 @@ The tests use a scripted stand-in for the daemon and stand-in commands from
 ## Usage
 
 ```sh
-node apps/harness/dist/index.js <script.yaml>
+node apps/harness/dist/index.js [--profile <nickname>] <script.yaml>
 ```
 
 Before it plays any browser step, the harness needs:
 
 - the daemon running (the harness never starts it),
-- Brave open with the paired extension connected.
+- Brave open with the paired extension connected in the profile the run uses.
 
 The daemon is found the same way the MCP server finds it:
 
@@ -40,6 +40,20 @@ The daemon is found the same way the MCP server finds it:
 | `BRAVE_MCP_DAEMON_URL` | Daemon address | `http://127.0.0.1:39200` |
 | `BRAVE_MCP_CONFIG_DIR` | Folder holding `daemon-config.json` (the pairing token) | `~/.local/share/brave-mcp` |
 | `BRAVE_MCP_AUTH_TOKEN` | Token, used in place of the config file | — |
+| `BRAVE_MCP_PROFILE` | Profile nickname for the run; `--profile` wins over it | — |
+
+### Choosing the profile
+
+Every browser step of a run, including opening and listing tabs, acts in one
+Brave profile, named by its nickname (set on the extension's options page):
+
+- `--profile <nickname>`, or else `BRAVE_MCP_PROFILE`, chooses it. Letter case
+  does not matter.
+- Without either, the run uses the only connected profile. With several
+  connected, it stops before the first step and lists their nicknames.
+
+A script file never names a profile, so the same script can run in any
+profile.
 
 ### Exit codes
 
@@ -47,8 +61,8 @@ The daemon is found the same way the MCP server finds it:
 |---|---|
 | 0 | Script completed |
 | 1 | A step failed (including a pause that reached its time limit) |
-| 2 | Script invalid or no script given; nothing was run |
-| 3 | Daemon or extension unavailable |
+| 2 | Script invalid, no script given, an invalid `--profile`, or several profiles connected and none chosen; nothing was run |
+| 3 | Daemon or extension unavailable, the chosen profile not connected, or the daemon too old |
 | 10 | Precondition passed: already satisfied, no step ran |
 | 130 / 143 | Stopped by `SIGINT` / `SIGTERM`; all started commands were ended |
 
@@ -58,9 +72,14 @@ The daemon is found the same way the MCP server finds it:
    step number and the harness exits with code 2.
 2. The `precondition` command runs, if the script has one. Exit 0 means the
    goal is already met: the harness exits with code 10.
-3. The daemon is located and asked whether the extension is connected and
-   paired. If not, the harness exits with code 3.
-4. The steps are played in order.
+3. The daemon is located. A daemon that reports no protocol version or an
+   older one is refused as too old (exit 3): stop it and start the current
+   daemon.
+4. The connected profiles are read. The chosen profile must be among them
+   (else exit 3); with none chosen, exactly one must be connected (none:
+   exit 3; several: exit 2, listing the nicknames).
+5. The steps are played in order. If the chosen profile disconnects during
+   the run, the run ends with code 3.
 
 ## Script format
 
@@ -235,42 +254,43 @@ node fixtures/site-server.mjs            # terminal 1
 node dist/index.js fixtures/login.yaml   # terminal 2
 ```
 
-The run opens two tabs in the profile the extension is installed in, closes
-both, and exits 0.
+The run opens two tabs in the chosen profile (add `--profile <nickname>` when
+several profiles are connected), closes both, and exits 0.
 
 To see a pause: copy `fixtures/login.yaml` to `local/login-pause.yaml`, change
 the `#mfa` selector of the `wait_for` step to `#wrong`, and play the copy.
 When the pause report appears, change the selector back, save, and press
 Enter.
 
-## Dedicated Brave profile
+## An automation profile
 
-The extension can read and control every tab of the profile it is installed
-in, and the daemon has no further guard. Keep automation away from your
-everyday browsing by giving it its own profile:
+The extension can read and control every tab of each profile it is installed
+in. One daemon serves all of them, and a run acts only in the profile it
+chooses. Keeping automation in its own profile still keeps it away from your
+everyday tabs:
 
 1. **Create the profile.** In Brave open the profile menu (top right) and
    choose to add a new profile. Name it, for example, `Automation`. A new
    window of that profile opens. An existing profile kept for this work can
    be used instead; skip this step then.
-2. **Load the extension there only.** In the automation window open
+2. **Load the extension there.** In the automation window open
    `brave://extensions`, turn on `Developer mode`, choose `Load unpacked` and
    select `apps/extension/dist`.
-3. **Pair it with the daemon.** Open the extension's options page and enter
-   the daemon address `ws://127.0.0.1:39200/extension/connect` and the token:
-   the `secret` value in `daemon-config.json` in the daemon config folder.
-4. **Remove the extension from the everyday profile.** In a window of your
-   everyday profile open `brave://extensions` and remove `brave-mcp`. The
-   daemon serves one extension connection at a time; with the extension in
-   two profiles, the one that connected last would be driven.
-5. **Check.** `curl -s http://127.0.0.1:39200/readyz` shows
-   `"extensionConnected": true` and `"paired": true`, and a tab list (the
-   `list_tabs` tool of the MCP server) shows only the automation profile's
-   tabs.
+3. **Pair it and name it.** Open the extension's options page and enter the
+   daemon address `ws://127.0.0.1:39200/extension/connect`, the token (the
+   `secret` value in `daemon-config.json` in the daemon config folder) and a
+   profile nickname, for example `Automation`. Each profile with the
+   extension needs a different nickname; a nickname already connected from
+   another profile is refused, and the options page shows why.
+4. **Check.** `curl -s http://127.0.0.1:39200/readyz` shows `"paired": true`
+   and a `profileCount` that includes this profile.
+5. **Run with it.** Pass `--profile Automation`, or set
+   `BRAVE_MCP_PROFILE=Automation`, whenever another profile with the
+   extension may be connected too.
 
 For an unattended run (for example from a scheduler) the daemon must be
-running and Brave must be open with a window of the automation profile. The
-harness starts neither, and exits with code 3 when the extension is not
+running and Brave must be open with a window of the chosen profile. The
+harness starts neither, and exits with code 3 when that profile is not
 connected. A script may start Brave itself with a `run` step.
 
 ## Your own scripts
@@ -286,8 +306,8 @@ node dist/index.js local/<your-script>.yaml
 
 ## Limitations
 
-- One daemon serves one Brave profile; the harness assumes the connected
-  extension is the automation profile's.
+- A run acts only in its chosen profile, but the pairing secret reaches every
+  connected profile: any program that reads it can act in all of them.
 - A captured value used as a command argument is visible in the system
   process list while that command runs.
 - A short captured value (a six-digit code) is masked wherever the same

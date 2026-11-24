@@ -59,6 +59,19 @@
           "type": "object"
         }
       }
+    },
+    "commonInput": {
+      "type": "object",
+      "description": "Inputs every tool in this catalog accepts in addition to its own inputSchema. The MCP server also offers list_profiles, which is not a catalog tool and takes no input.",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$",
+          "description": "Nickname of the Brave profile to act in (see list_profiles). Optional when only one profile is connected or the MCP server has a default profile."
+        }
+      }
     }
   },
   "tools": [
