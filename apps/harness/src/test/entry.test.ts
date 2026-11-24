@@ -36,7 +36,7 @@ test("no script path prints a usage line and exits with code 2", async () => {
   const result = await runHarness([]);
 
   assert.equal(result.code, 2);
-  assert.match(result.stderr, /^Usage: brave-mcp-play <script\.yaml>$/m);
+  assert.match(result.stderr, /^Usage: brave-mcp-play \[--profile <nickname>\] <script\.yaml>$/m);
   assert.equal(result.stdout, "");
 });
 

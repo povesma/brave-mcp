@@ -456,6 +456,9 @@ export class Engine {
         if (error.code === "BRAVE_EXTENSION_OFFLINE" && !(await this.extensionConnected())) {
           throw new Unavailable("the extension is not connected and paired");
         }
+        if (error.code === "BRAVE_PROFILE_NOT_FOUND" && !(await this.extensionConnected())) {
+          throw new Unavailable("the chosen profile is not connected");
+        }
         throw new StepFailure(error.code);
       }
       throw error;

@@ -12,17 +12,25 @@ export type FakeReplySource = FakeReply | ((params: Record<string, unknown>) => 
 export interface RecordedCall {
   method: string;
   params: Record<string, unknown>;
+  profile?: string;
 }
 
 const STATUS_BY_ERROR_CODE: Record<string, number> = {
   BRAVE_TIMEOUT: 504,
   BRAVE_AUTH_REQUIRED: 401,
+  BRAVE_PROFILE_REQUIRED: 409,
+  BRAVE_PROFILE_NOT_FOUND: 409,
 };
 
+export const FAKE_PROFILE = "Simulated";
+
+// `profiles.list` is answered from `profiles` and kept out of `calls`, so readiness checks do not count as steps.
 export class FakeDaemon {
   readonly calls: RecordedCall[] = [];
   extensionConnected = true;
   paired = true;
+  profiles: string[] = [FAKE_PROFILE];
+  protocolVersion: number | undefined = 2;
 
   private readonly queues = new Map<string, FakeReplySource[]>();
   private readonly fallbacks = new Map<string, FakeReplySource>();
@@ -68,7 +76,19 @@ export class FakeDaemon {
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
   }
 
+  private connectedProfiles(): string[] {
+    return this.extensionConnected && this.paired ? this.profiles : [];
+  }
+
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (request.method === "GET" && request.url === "/healthz") {
+      send(response, 200, {
+        ok: true,
+        profileCount: this.connectedProfiles().length,
+        ...(this.protocolVersion === undefined ? {} : { protocolVersion: this.protocolVersion }),
+      });
+      return;
+    }
     if (request.method === "GET" && request.url === "/readyz") {
       send(response, 200, {
         ok: true,
@@ -88,14 +108,22 @@ export class FakeDaemon {
       method: string;
       params?: Record<string, unknown>;
       authToken?: string;
+      profile?: string;
     };
     if (body.authToken !== this.token) {
       send(response, 401, errorReply(body.id, { code: "BRAVE_AUTH_REQUIRED", message: "Invalid daemon auth token." }));
       return;
     }
 
+    if (body.method === "profiles.list") {
+      const connectedAt = new Date(0).toISOString();
+      const profiles = this.connectedProfiles().map((nickname) => ({ nickname, connectedAt }));
+      send(response, 200, { id: body.id, ok: true, result: { profiles } });
+      return;
+    }
+
     const params = body.params ?? {};
-    this.calls.push({ method: body.method, params });
+    this.calls.push({ method: body.method, params, ...(body.profile === undefined ? {} : { profile: body.profile }) });
 
     const source = this.queues.get(body.method)?.shift() ?? this.fallbacks.get(body.method);
     const reply: FakeReply =

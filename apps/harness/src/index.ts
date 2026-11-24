@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { EventEmitter } from "node:events";
 
+import { profileNicknameSchema } from "@brave-mcp/protocol";
+
 import { CommandFailure, CommandRunner } from "./commands.js";
 import { DaemonClient, DaemonError, DaemonUnavailableError, locateDaemon } from "./daemon-client.js";
 import { Engine, type ResumeSignal } from "./engine.js";
@@ -13,6 +15,12 @@ const EXIT_SCRIPT_INVALID = 2;
 const EXIT_UNAVAILABLE = 3;
 const EXIT_ALREADY_SATISFIED = 10;
 const EXIT_BY_SIGNAL = { SIGINT: 130, SIGTERM: 143 } as const;
+const USAGE = "Usage: brave-mcp-play [--profile <nickname>] <script.yaml>";
+
+interface Arguments {
+  scriptPath: string;
+  profile?: string;
+}
 
 const mask = new SecretMask();
 const runner = new CommandRunner();
@@ -52,29 +60,73 @@ function waitForResume(timeLimitMs: number): Promise<ResumeSignal> {
   });
 }
 
-async function connectToDaemon(): Promise<DaemonClient | undefined> {
+function parseArguments(args: string[]): Arguments | undefined {
+  let scriptPath: string | undefined;
+  let profile: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--profile") {
+      profile = args[index + 1];
+      if (profile === undefined) {
+        return undefined;
+      }
+      index += 1;
+    } else if (scriptPath === undefined) {
+      scriptPath = arg;
+    } else {
+      return undefined;
+    }
+  }
+  if (scriptPath === undefined) {
+    return undefined;
+  }
+  return { scriptPath, ...(profile === undefined ? {} : { profile }) };
+}
+
+async function connectToDaemon(profile: string | undefined): Promise<DaemonClient | number> {
   try {
     const location = await locateDaemon();
     mask.register(location.authToken);
-    const client = new DaemonClient(location);
-    if (await client.connected()) {
-      return client;
+    const client = new DaemonClient(location, profile === undefined ? {} : { profile });
+    const readiness = await client.readiness();
+    switch (readiness.status) {
+      case "ready":
+        return client;
+      case "profile_required":
+        sayError(
+          `several profiles are connected (${readiness.connected.join(", ")}); ` +
+            "choose one with --profile or BRAVE_MCP_PROFILE; nothing was run",
+        );
+        return EXIT_SCRIPT_INVALID;
+      case "not_connected":
+        sayError(`unavailable: ${readiness.reason}`);
+        return EXIT_UNAVAILABLE;
     }
-    sayError("unavailable: the extension is not connected and paired");
   } catch (error) {
     if (!(error instanceof DaemonUnavailableError) && !(error instanceof DaemonError)) {
       throw error;
     }
     sayError(`unavailable: ${error.message}`);
+    return EXIT_UNAVAILABLE;
   }
-  return undefined;
 }
 
 async function main(): Promise<number> {
-  const scriptPath = process.argv[2];
-  if (scriptPath === undefined) {
-    sayError("Usage: brave-mcp-play <script.yaml>");
+  const args = parseArguments(process.argv.slice(2));
+  if (args === undefined) {
+    sayError(USAGE);
     return EXIT_SCRIPT_INVALID;
+  }
+  const { scriptPath } = args;
+  const rawProfile = args.profile ?? (process.env.BRAVE_MCP_PROFILE || undefined);
+  let profile: string | undefined;
+  if (rawProfile !== undefined) {
+    const parsed = profileNicknameSchema.safeParse(rawProfile);
+    if (!parsed.success) {
+      sayError(`invalid profile nickname: ${parsed.error.issues[0]?.message ?? "not a profile nickname"}`);
+      return EXIT_SCRIPT_INVALID;
+    }
+    profile = parsed.data;
   }
 
   const loaded = await loadScript(scriptPath);
@@ -105,9 +157,9 @@ async function main(): Promise<number> {
     }
   }
 
-  const client = await connectToDaemon();
-  if (!client) {
-    return EXIT_UNAVAILABLE;
+  const client = await connectToDaemon(profile);
+  if (typeof client === "number") {
+    return client;
   }
 
   const engine = new Engine({

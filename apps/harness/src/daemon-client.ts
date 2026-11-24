@@ -18,8 +18,10 @@ import {
   navigateOutputSchema,
   openTabInputSchema,
   openTabOutputSchema,
+  PROTOCOL_VERSION,
   pressKeyInputSchema,
   pressKeyOutputSchema,
+  profileKey,
   reloadTabInputSchema,
   reloadTabOutputSchema,
   switchToTabInputSchema,
@@ -39,7 +41,12 @@ const DAEMON_WAIT_MARGIN_MS = 500;
 const CLIENT_MARGIN_MS = 2_000;
 const READINESS_TIME_LIMIT_MS = 5_000;
 
+const profilesListOutputSchema = z.object({
+  profiles: z.array(z.object({ nickname: z.string(), connectedAt: z.string() })),
+});
+
 const METHODS = {
+  "profiles.list": { input: z.object({}), output: profilesListOutputSchema },
   "tabs.open": { input: openTabInputSchema, output: openTabOutputSchema },
   "tabs.list": { input: listTabsInputSchema, output: listTabsOutputSchema },
   "tabs.getInfo": { input: getTabInfoInputSchema, output: getTabInfoOutputSchema },
@@ -58,10 +65,14 @@ const daemonConfigSchema = z.object({
   secret: z.string().min(1),
 });
 
-const readinessSchema = z.object({
-  extensionConnected: z.boolean(),
-  paired: z.boolean(),
+const healthSchema = z.object({
+  protocolVersion: z.number().int().optional(),
 });
+
+export type Readiness =
+  | { status: "ready" }
+  | { status: "not_connected"; reason: string }
+  | { status: "profile_required"; connected: string[] };
 
 export type HarnessMethod = keyof typeof METHODS;
 export type MethodParams<M extends HarnessMethod> = z.input<(typeof METHODS)[M]["input"]>;
@@ -75,6 +86,7 @@ export interface DaemonLocation {
 
 export interface DaemonClientOptions {
   timeLimitMs?: number;
+  profile?: string;
 }
 
 export class DaemonError extends Error {
@@ -144,6 +156,7 @@ export class DaemonClient {
         method,
         params: sentParams,
         authToken: this.location.authToken,
+        ...(this.options.profile === undefined ? {} : { profile: this.options.profile }),
       }),
     });
 
@@ -162,13 +175,38 @@ export class DaemonClient {
     return result.data as MethodResult<M>;
   }
 
-  async connected(): Promise<boolean> {
-    const body = await this.request("/readyz", this.options.timeLimitMs ?? READINESS_TIME_LIMIT_MS, { method: "GET" });
-    const readiness = readinessSchema.safeParse(body);
-    if (!readiness.success) {
-      throw new DaemonUnavailableError("the daemon readiness reply has an unexpected shape");
+  async readiness(): Promise<Readiness> {
+    const body = await this.request("/healthz", this.options.timeLimitMs ?? READINESS_TIME_LIMIT_MS, { method: "GET" });
+    const health = healthSchema.safeParse(body);
+    if (!health.success) {
+      throw new DaemonUnavailableError("the daemon health reply has an unexpected shape");
     }
-    return readiness.data.extensionConnected && readiness.data.paired;
+    const version = health.data.protocolVersion;
+    if (version === undefined || version < PROTOCOL_VERSION) {
+      throw new DaemonUnavailableError(
+        `the daemon at ${this.location.daemonUrl} is too old (protocol ${version ?? 1}, need ${PROTOCOL_VERSION}); stop it and start the current daemon`,
+      );
+    }
+
+    const { profiles } = await this.call("profiles.list", {});
+    const nicknames = profiles.map((profile) => profile.nickname);
+    const chosen = this.options.profile;
+    if (chosen !== undefined) {
+      return nicknames.some((nickname) => profileKey(nickname) === profileKey(chosen))
+        ? { status: "ready" }
+        : { status: "not_connected", reason: `profile ${chosen} is not connected` };
+    }
+    if (nicknames.length === 1) {
+      return { status: "ready" };
+    }
+    if (nicknames.length === 0) {
+      return { status: "not_connected", reason: "the extension is not connected and paired" };
+    }
+    return { status: "profile_required", connected: nicknames };
+  }
+
+  async connected(): Promise<boolean> {
+    return (await this.readiness()).status === "ready";
   }
 
   private async request(path: string, timeLimitMs: number, init: RequestInit): Promise<unknown> {
