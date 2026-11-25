@@ -210,7 +210,7 @@ npm run build:harness
 **3. Start the daemon**
 
 ```sh
-node apps/daemon/dist/index.js --port 39200 --config-dir /tmp/brave-mcp-smoke
+node apps/daemon/dist/index.js --port 39200
 ```
 
 Or let the repository start the local stack for you:
@@ -219,7 +219,10 @@ Or let the repository start the local stack for you:
 npm run launch:brave
 ```
 
-The daemon writes its pairing secret to `/tmp/brave-mcp-smoke/daemon-config.json`.
+The daemon writes its pairing secret to `~/.local/share/brave-mcp/daemon-config.json`.
+The MCP server and the workflow player read it from there too. To use another folder,
+set `BRAVE_MCP_CONFIG_DIR` for all of them; with different folders they read different
+secrets and fail with "Invalid daemon auth token".
 
 **4. Load the extension in Brave**
 
@@ -244,18 +247,17 @@ Replace `/absolute/path/to` with the full path of this repository.
 Claude Code (`-s user` makes the tools available in every project):
 
 ```sh
-claude mcp add -s user brave-mcp -e BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+claude mcp add -s user brave-mcp -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
 Codex:
 
 ```sh
-codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+codex mcp add brave-mcp -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
 Another MCP client: add a `stdio` server that runs
-`node /absolute/path/to/apps/mcp/dist/index.js` with the environment variable
-`BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke`.
+`node /absolute/path/to/apps/mcp/dist/index.js`.
 
 Optional: to give the registration a default profile, or lock it to one, add
 `-e BRAVE_MCP_PROFILE=<nickname>` and `-e BRAVE_MCP_PROFILE_LOCK=1` (Codex: `--env`). See

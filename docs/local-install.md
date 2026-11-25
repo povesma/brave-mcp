@@ -23,7 +23,7 @@ npm run build:mcp
 ## 2. Start The Daemon
 
 ```sh
-node apps/daemon/dist/index.js --port 39200 --config-dir /tmp/brave-mcp-smoke
+node apps/daemon/dist/index.js --port 39200
 ```
 
 Or use the local launcher:
@@ -35,8 +35,13 @@ npm run launch:brave
 The pairing secret is written to:
 
 ```text
-/tmp/brave-mcp-smoke/daemon-config.json
+~/.local/share/brave-mcp/daemon-config.json
 ```
+
+The daemon, the MCP server, the workflow player and the launcher all use this folder
+unless `BRAVE_MCP_CONFIG_DIR` (or the daemon's `--config-dir`) names another one. If
+you change it, change it for all of them; otherwise they read different pairing secrets
+and fail with "Invalid daemon auth token".
 
 ## 3. Load The Extension In Brave
 
@@ -77,13 +82,13 @@ Expected shape:
 Claude Code (`-s user` makes the tools available in every project):
 
 ```sh
-claude mcp add -s user brave-mcp -e BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+claude mcp add -s user brave-mcp -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
 Codex:
 
 ```sh
-codex mcp add brave-mcp --env BRAVE_MCP_CONFIG_DIR=/tmp/brave-mcp-smoke -- node /absolute/path/to/apps/mcp/dist/index.js
+codex mcp add brave-mcp -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
 
 Then start a fresh agent session.

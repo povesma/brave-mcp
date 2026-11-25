@@ -1,16 +1,20 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 39200;
-const DEFAULT_CONFIG_DIR = "/tmp/brave-mcp-smoke";
+// Must match the daemon, MCP server and workflow player, or they read different pairing secrets.
+const DEFAULT_CONFIG_DIR = process.env.BRAVE_MCP_CONFIG_DIR
+  ? resolve(process.env.BRAVE_MCP_CONFIG_DIR)
+  : join(homedir(), ".local", "share", "brave-mcp");
 const DEFAULT_BRAVE_APP = "Brave Browser";
-const DEFAULT_PROFILE_DIR = "/tmp/brave-mcp-profile";
+const DEFAULT_PROFILE_DIR = join(homedir(), ".local", "share", "brave-mcp", "test-profile");
 const DEFAULT_HEALTH_TIMEOUT_MS = 15_000;
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 
