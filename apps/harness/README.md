@@ -243,6 +243,7 @@ waits for the browser).
 | `fixtures/commands/fake-cli-login.mjs` | Prints a sign-in URL on standard error, serves a confirm page on port 39311, exits 0 after the confirm button is clicked |
 | `fixtures/login.yaml` | The flow |
 | `fixtures/reload-tab.yaml` | Opens two fixture tabs, adopts the first by `url_regex` with `pick: first` and `activate: true`, reloads it, then closes both |
+| `fixtures/profile-tab.yaml` | Opens one tab on `example.com` in the chosen profile and leaves it open, to check by eye which profile a run uses; it never lists other tabs |
 | `fixtures/commands/*.mjs` | Small stand-in commands used by the script and the tests; each file starts with a comment that says what it does |
 | `fixtures/daemon-config/` | A sample daemon config file used by a test |
 

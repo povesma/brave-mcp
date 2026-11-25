@@ -190,7 +190,7 @@ test("a YAML syntax error is rejected with its line number", () => {
   assert.ok(!result.ok && /^line \d+: /.test(formatProblem(result.problems[0]!)));
 });
 
-for (const shipped of ["fixtures/login.yaml", "fixtures/reload-tab.yaml"]) {
+for (const shipped of ["fixtures/login.yaml", "fixtures/reload-tab.yaml", "fixtures/profile-tab.yaml"]) {
   test(`the shipped script ${shipped} is valid`, async () => {
     const result = await loadScript(fileURLToPath(new URL(`../../${shipped}`, import.meta.url)));
 

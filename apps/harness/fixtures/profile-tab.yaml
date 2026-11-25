@@ -1,0 +1,8 @@
+# Opens one tab in the chosen profile and leaves it open, so the profile it
+# landed in can be checked by eye. It never lists or reads other tabs.
+# Run: node dist/index.js --profile <nickname> fixtures/profile-tab.yaml
+name: profile-tab
+
+steps:
+  - open_tab: { url: "https://example.com/?brave-mcp-profile-check" }
+  - wait_for: { selector: "body", timeout_s: 15 }
