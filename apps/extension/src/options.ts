@@ -1,6 +1,10 @@
 import { PROFILE_NICKNAME_RULE } from "@brave-mcp/protocol";
 
-import { checkNickname, parseLaunchParameters } from "./bridge-identity.js";
+import { checkNickname, parseLaunchParameters, readRefusal, saveOutcomeMessage } from "./bridge-identity.js";
+
+// The daemon decides a nickname clash after probing the current holder for up to 2 s.
+const SAVE_RESULT_WAIT_MS = 3_000;
+const SAVE_RESULT_POLL_MS = 250;
 
 interface ExtensionSettings {
   daemonUrl: string;
@@ -93,7 +97,21 @@ async function requestReconnect(): Promise<BridgeStatus> {
   }) as Promise<BridgeStatus>;
 }
 
-type SaveResult = { saved: true; status: BridgeStatus } | { saved: false; reason: string };
+type SaveResult = { saved: true; status: BridgeStatus; message: string } | { saved: false; reason: string };
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForConnectionResult(): Promise<BridgeStatus> {
+  const deadline = Date.now() + SAVE_RESULT_WAIT_MS;
+  let status = await requestBridgeStatus();
+  while (Date.now() < deadline && status.state !== "disconnected") {
+    await delay(SAVE_RESULT_POLL_MS);
+    status = await requestBridgeStatus();
+  }
+  return status;
+}
 
 async function persistAndReconnect(
   daemonUrl: string,
@@ -105,13 +123,23 @@ async function persistAndReconnect(
     return { saved: false, reason: `Profile nickname not saved. Use ${nickname.reason}.` };
   }
 
-  await saveSettings({
+  const settings = {
     daemonUrl: daemonUrl.trim() || DEFAULT_DAEMON_URL,
     authToken: authToken.trim(),
     profileNickname: nickname.nickname,
-  });
+  };
+  await saveSettings(settings);
+  await requestReconnect();
 
-  return { saved: true, status: await requestReconnect() };
+  const status = await waitForConnectionResult();
+  const message = saveOutcomeMessage({
+    state: status.state,
+    lastError: status.lastError,
+    nickname: settings.profileNickname,
+    daemonUrl: settings.daemonUrl,
+    refusal: await readRefusal(getStorage()),
+  });
+  return { saved: true, status, message };
 }
 
 async function main(): Promise<void> {
@@ -133,10 +161,10 @@ async function main(): Promise<void> {
   authTokenInput.value = launch.authToken ?? settings.authToken;
   nicknameInput.value = launch.profileNickname ?? settings.profileNickname;
 
-  const showSaveResult = (result: SaveResult, savedText: string) => {
+  const showSaveResult = (result: SaveResult) => {
     if (result.saved) {
       bridgeStatus.textContent = renderBridgeStatus(result.status);
-      status.textContent = savedText;
+      status.textContent = result.message;
     } else {
       status.textContent = result.reason;
     }
@@ -146,10 +174,8 @@ async function main(): Promise<void> {
     launch.autosave &&
     (launch.daemonUrl !== undefined || launch.authToken !== undefined || launch.profileNickname !== undefined)
   ) {
-    showSaveResult(
-      await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value),
-      "Saved from launch parameters and reconnect requested.",
-    );
+    status.textContent = "Saving from launch parameters and connecting…";
+    showSaveResult(await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value));
   }
 
   bridgeStatus.textContent = renderBridgeStatus(await requestBridgeStatus());
@@ -157,10 +183,8 @@ async function main(): Promise<void> {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     void (async () => {
-      showSaveResult(
-        await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value),
-        "Saved and reconnect requested.",
-      );
+      status.textContent = "Saving and connecting…";
+      showSaveResult(await persistAndReconnect(daemonUrlInput.value, authTokenInput.value, nicknameInput.value));
     })();
   });
 

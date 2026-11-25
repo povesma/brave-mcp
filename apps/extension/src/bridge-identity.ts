@@ -24,6 +24,31 @@ export type ConnectDecision = { connect: true; nickname: string } | { connect: f
 
 export type NicknameCheck = { ok: true; nickname: string } | { ok: false; reason: string };
 
+export interface SaveOutcomeInputs {
+  state: "disconnected" | "connecting" | "connected";
+  lastError: string | null;
+  nickname: string;
+  daemonUrl: string;
+  refusal: RefusalRecord | null;
+}
+
+export function saveOutcomeMessage(inputs: SaveOutcomeInputs): string {
+  const refusal = inputs.refusal;
+  if (refusal && refusal.nickname === inputs.nickname && refusal.daemonUrl === inputs.daemonUrl) {
+    if (refusal.code === BRIDGE_CLOSE_CODES.nicknameInUse) {
+      return `Not connected: nickname "${inputs.nickname}" is already used by another connected profile. Choose another nickname.`;
+    }
+    return `Not connected: the daemon refused this profile (${refusal.reason}). Change the settings.`;
+  }
+  if (inputs.state === "connected") {
+    return `Saved and connected as "${inputs.nickname}".`;
+  }
+  if (inputs.state === "connecting") {
+    return "Saved; still connecting to the daemon.";
+  }
+  return `Saved, but not connected. ${inputs.lastError ?? "The daemon did not answer."}`;
+}
+
 export interface LaunchParameters {
   daemonUrl?: string;
   authToken?: string;

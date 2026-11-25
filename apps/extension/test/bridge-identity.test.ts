@@ -11,6 +11,7 @@ import {
   isRefusal,
   parseLaunchParameters,
   readRefusal,
+  saveOutcomeMessage,
   shouldConnect,
   shouldKeepAlarm,
   writeRefusal,
@@ -159,4 +160,60 @@ test("the launch-parameter parser reads profileNickname", () => {
     autosave: true,
   });
   assert.deepEqual(parseLaunchParameters(""), { autosave: false });
+});
+
+test("after a save, a nickname clash is reported as not connected, never as saved", () => {
+  const message = saveOutcomeMessage({
+    state: "disconnected",
+    lastError: "The daemon refused this profile: nickname in use. Change the settings or press Reconnect Now.",
+    nickname: "Work",
+    daemonUrl: DAEMON_URL,
+    refusal: { code: BRIDGE_CLOSE_CODES.nicknameInUse, reason: "nickname in use", nickname: "Work", daemonUrl: DAEMON_URL },
+  });
+  assert.equal(
+    message,
+    'Not connected: nickname "Work" is already used by another connected profile. Choose another nickname.',
+  );
+});
+
+test("after a save, another refusal is reported with its reason", () => {
+  const message = saveOutcomeMessage({
+    state: "disconnected",
+    lastError: null,
+    nickname: "Work",
+    daemonUrl: DAEMON_URL,
+    refusal: { code: BRIDGE_CLOSE_CODES.invalidHello, reason: "invalid hello", nickname: "Work", daemonUrl: DAEMON_URL },
+  });
+  assert.match(message, /^Not connected: the daemon refused this profile \(invalid hello\)\./);
+  assert.doesNotMatch(message, /Saved/);
+});
+
+test("after a save, a connection is reported with its nickname; an old refusal for another nickname is ignored", () => {
+  const message = saveOutcomeMessage({
+    state: "connected",
+    lastError: null,
+    nickname: "Home",
+    daemonUrl: DAEMON_URL,
+    refusal: workRefusal,
+  });
+  assert.equal(message, 'Saved and connected as "Home".');
+});
+
+test("after a save, a failed or pending connection says it is not connected yet", () => {
+  const failed = saveOutcomeMessage({
+    state: "disconnected",
+    lastError: "WebSocket error while connecting to the daemon.",
+    nickname: "Home",
+    daemonUrl: DAEMON_URL,
+    refusal: null,
+  });
+  assert.equal(failed, "Saved, but not connected. WebSocket error while connecting to the daemon.");
+  const pending = saveOutcomeMessage({
+    state: "connecting",
+    lastError: null,
+    nickname: "Home",
+    daemonUrl: DAEMON_URL,
+    refusal: null,
+  });
+  assert.equal(pending, "Saved; still connecting to the daemon.");
 });
